@@ -60,9 +60,22 @@ const PARTICLE_PRONUNCIATION_OVERRIDES: Record<string, string> = {
 };
 
 // Gets the text that should actually be spoken aloud for a card's question.
-// Differs from getQuestion() only for particle-category word cards, where
-// the written kana and its spoken reading diverge.
+// Differs from getQuestion() in two cases:
+// - particle-category word cards, where the written kana and its spoken
+//   reading diverge (は/へ overrides above).
+// - letter cards whose question script is 'kanji': a bare kanji glyph is
+//   genuinely ambiguous to TTS engines (most kanji have multiple possible
+//   readings - on'yomi, kun'yomi, and often several of each), so asking
+//   Speech.speak() to read "八" directly is a coin flip on whether it comes
+//   out as "hachi" at all. The row's hiragana column is the one reading
+//   this app actually teaches for that kanji (see letters_japanese's
+//   one-reading-per-row limitation, noted in AGENTS.md), so that's what
+//   gets spoken regardless of which script is currently shown as the
+//   question - never the kanji character itself.
 const getSpokenQuestion = (card: FlashCard | LetterCard): string => {
+  if (card.cardType === 'letter' && card.questionScript === 'kanji') {
+    return card.hiragana;
+  }
   const text = getQuestion(card);
   if (card.cardType === 'flash' && (card as FlashCard).category === 'particle') {
     return PARTICLE_PRONUNCIATION_OVERRIDES[text] ?? text;
