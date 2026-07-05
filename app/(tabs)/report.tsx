@@ -1,12 +1,16 @@
 // ALark-Claude_Review@MEGADATA
-// report.tsx - "Report Bug" tab. Anyone (guest or logged in) can submit a
-// free-text bug report, gated behind a simple client-side human-check (a
-// random math question + a hidden honeypot field) rather than a real
-// server-verified captcha - see supabase/sql/bug_reports.sql for the
-// reasoning and the RLS policy this relies on.
+// report.tsx - "Report Bug" tab. Requires being logged in - enforced both
+// here (the form is replaced with a Sign In/Sign Up prompt for guests) and
+// at the database level (bug_reports' RLS insert policy only grants to the
+// `authenticated` role, so a guest's Supabase client has no way to write
+// even by calling the API directly). Submission is additionally gated
+// behind a simple client-side human-check (a random math question + a
+// hidden honeypot field) rather than a real server-verified captcha - see
+// supabase/sql/bug_reports.sql for that reasoning.
 
 import { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
+import { useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { usePreferences } from '../../lib/preferences';
 import { submitBugReport } from '../../lib/bugReports';
@@ -21,6 +25,8 @@ const makeChallenge = () => {
 
 export default function ReportBugScreen() {
   const { colors } = usePreferences();
+  const router = useRouter();
+  const [checkingSession, setCheckingSession] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -37,7 +43,10 @@ export default function ReportBugScreen() {
   const [success, setSuccess] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setUserId(data.session?.user?.id ?? null));
+    supabase.auth.getSession().then(({ data }) => {
+      setUserId(data.session?.user?.id ?? null);
+      setCheckingSession(false);
+    });
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
       setUserId(session?.user?.id ?? null);
     });
@@ -91,6 +100,39 @@ export default function ReportBugScreen() {
     }
   };
 
+  if (checkingSession) {
+    return (
+      <View style={[styles.center, { backgroundColor: colors.background }]}>
+        <ActivityIndicator color={colors.text} size="large" />
+      </View>
+    );
+  }
+
+  if (!userId) {
+    return (
+      <View style={[styles.center, { backgroundColor: colors.background }]}>
+        <Text style={[styles.emptyTitle, { color: colors.text }]}>Sign in to report a bug</Text>
+        <Text style={[styles.emptyBody, { color: colors.textMuted }]}>
+          Bug reports need an account so we can follow up and so submissions don't get lost to spam.
+        </Text>
+        <View style={styles.authButtonRow}>
+          <TouchableOpacity
+            style={[styles.authButton, { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1 }]}
+            onPress={() => router.push('/login')}
+          >
+            <Text style={[styles.submitText, { color: colors.text }]}>Sign In</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.authButton, { backgroundColor: colors.accent }]}
+            onPress={() => router.push('/login?mode=signup')}
+          >
+            <Text style={styles.submitText}>Sign Up</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
@@ -98,7 +140,7 @@ export default function ReportBugScreen() {
     >
       <Text style={[styles.title, { color: colors.text }]}>Report a Bug</Text>
       <Text style={[styles.subtitle, { color: colors.textMuted }]}>
-        Found something broken or confusing? Let us know below - no account required.
+        Found something broken or confusing? Let us know below.
       </Text>
 
       <Text style={[styles.sectionTitle, { color: colors.textFaint }]}>Details</Text>
@@ -185,6 +227,34 @@ export default function ReportBugScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  center: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+    gap: 12,
+  },
+  emptyTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+  },
+  emptyBody: {
+    fontSize: 14,
+    textAlign: 'center',
+    maxWidth: 340,
+    lineHeight: 20,
+    marginBottom: 8,
+  },
+  authButtonRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  authButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+    alignItems: 'center',
   },
   content: {
     padding: 24,

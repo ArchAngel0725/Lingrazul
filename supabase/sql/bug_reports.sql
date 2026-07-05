@@ -1,16 +1,21 @@
 -- Lingrazul: bug_reports table backing the "Report Bug" tab.
 --
--- Anyone (logged in or guest) can submit a report - the app-side form gates
--- submission behind a simple client-side human-check (a random math
--- question + a hidden honeypot field), not a real server-verified captcha,
--- so this is meant to stop casual/naive spam, not a determined attacker.
--- Given that, this table intentionally has NO select policy: nobody can
--- read reports through the anon/authenticated API keys the app uses -
--- only the developer, browsing via the Supabase dashboard (which uses the
--- service role and bypasses RLS entirely), can see submissions. That's the
--- whole point - "the database feeds me the problems," not a public feed.
+-- Only logged-in users can submit a report (guests are turned away by both
+-- the app UI and this table's RLS policy - see below). Submission is also
+-- gated behind a simple client-side human-check (a random math question +
+-- a hidden honeypot field), not a real server-verified captcha, so that's
+-- meant to stop casual/naive spam, not a determined attacker. This table
+-- intentionally has NO select policy: nobody can read reports through the
+-- anon/authenticated API keys the app uses - only the developer, browsing
+-- via the Supabase dashboard (which uses the service role and bypasses RLS
+-- entirely), can see submissions. That's the whole point - "the database
+-- feeds me the problems," not a public feed.
 --
--- Run in the Supabase SQL editor.
+-- Run in the Supabase SQL editor. If bug_reports already exists from an
+-- earlier version of this script (the one that allowed anon inserts), run
+-- supabase/sql/bug_reports_require_login.sql afterwards instead of this
+-- whole file, since `create table if not exists` won't update the policy
+-- on a table that already exists.
 
 create table if not exists bug_reports (
   id uuid primary key default gen_random_uuid(),
@@ -28,10 +33,11 @@ create table if not exists bug_reports (
 
 alter table bug_reports enable row level security;
 
--- Anyone (anon or authenticated) can submit a report.
-create policy "Anyone can submit a bug report"
+-- Only logged-in users can submit a report - guests get no insert
+-- permission at all, enforced here rather than only in the app's UI.
+create policy "Only logged-in users can submit a bug report"
   on bug_reports for insert
-  to anon, authenticated
+  to authenticated
   with check (true);
 
 -- Deliberately no select/update/delete policy - the app never needs to read
