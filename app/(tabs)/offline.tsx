@@ -23,6 +23,7 @@ import {
 } from '../../lib/cardQueue';
 import { supabase } from '../../lib/supabase';
 import { usePreferences } from '../../lib/preferences';
+import { useIsNarrow } from '../../lib/responsive';
 import {
   loadStudyWordCategories,
   saveStudyWordCategories,
@@ -61,6 +62,7 @@ const KANJI_DEFAULT_MODE = LETTER_MODES.find(m => m.question === 'kanji' && m.an
 
 export default function OfflineScreen() {
   const { colors, muted, setMuted, announceMode, setAnnounceMode } = usePreferences();
+  const isNarrow = useIsNarrow();
   const [loading, setLoading] = useState(true);
   const [currentCard, setCurrentCard] = useState<FlashCard | LetterCard | null>(null);
   const [choices, setChoices] = useState<string[]>([]);
@@ -486,232 +488,271 @@ export default function OfflineScreen() {
   // renders).
   if (!currentCard && !noResults && !invalidTag) return null;
 
+  // --- Categories panel content (word categories + letters + modes) -
+  // shared between the wide 3-column layout and the narrow stacked one. ---
+  const categoriesPanel = (
+    <>
+      <Text style={[styles.panelTitle, { color: colors.textFaint }]}>Categories</Text>
+      <ScrollView style={isNarrow ? styles.categoryListNarrow : styles.categoryList}>
+
+        {/* Word categories */}
+        {categories.map(cat => {
+          const active = selectedCategories.includes(cat);
+          return (
+            <TouchableOpacity
+              key={cat}
+              style={[
+                styles.categoryChip,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+                active && { backgroundColor: colors.accent, borderColor: colors.accent },
+              ]}
+              onPress={() => handleCategoryToggle(cat)}
+            >
+              <Text style={[
+                styles.categoryText,
+                { color: colors.textFaint },
+                active && { color: colors.accentText, fontWeight: 'bold' },
+              ]}>
+                {cat}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+
+        {/* Letters section */}
+        <Text style={[styles.panelTitle, { color: colors.textFaint, marginTop: 16 }]}>Letters</Text>
+        {LETTER_CATEGORIES.map(cat => {
+          const active = selectedLetterCategories.includes(cat);
+          return (
+            <TouchableOpacity
+              key={cat}
+              style={[
+                styles.categoryChip,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+                active && { backgroundColor: colors.accent, borderColor: colors.accent },
+              ]}
+              onPress={() => handleLetterCategoryToggle(cat)}
+            >
+              <Text style={[
+                styles.categoryText,
+                { color: colors.textFaint },
+                active && { color: colors.accentText, fontWeight: 'bold' },
+              ]}>
+                {cat}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+
+        {/* Mode selection - only show if letters selected */}
+        {selectedLetterCategories.length > 0 && (
+          <>
+            <Text style={[styles.panelTitle, { color: colors.textFaint, marginTop: 16 }]}>Mode</Text>
+            {LETTER_MODES.map((mode, index) => {
+              const active = selectedModes.includes(mode);
+              return (
+                <TouchableOpacity
+                  key={index}
+                  style={[
+                    styles.categoryChip,
+                    { backgroundColor: colors.surface, borderColor: colors.border },
+                    active && { backgroundColor: colors.accent, borderColor: colors.accent },
+                  ]}
+                  onPress={() => handleModeToggle(mode)}
+                >
+                  <Text style={[
+                    styles.categoryText,
+                    { color: colors.textFaint },
+                    active && { color: colors.accentText, fontWeight: 'bold' },
+                  ]}>
+                    {mode.question} → {mode.answer}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </>
+        )}
+
+      </ScrollView>
+
+      <TouchableOpacity style={[styles.applyButton, { backgroundColor: colors.accent }]} onPress={loadSession}>
+        <Text style={[styles.applyText, { color: colors.accentText }]}>Apply</Text>
+      </TouchableOpacity>
+    </>
+  );
+
+  // --- The flashcard box itself, header (announce toggle + mute) plus
+  // whichever state applies (tag error / no results / an actual card). On
+  // narrow screens the header wraps and its labels shorten, since
+  // "Announce correct" + a switch + "Announce Celebration" + a mute button
+  // all on one line doesn't fit a phone-width screen. ---
+  const cardBoxContent = (
+    <View style={[
+      isNarrow ? styles.cardBoxNarrow : styles.cardBox,
+      { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+    ]}>
+      <View style={styles.cardBoxHeader}>
+        <View style={styles.announceToggleRow}>
+          <Text style={[styles.announceLabel, { color: announceMode === 'correct' ? colors.text : colors.textFaint }]}>
+            {isNarrow ? 'Correct' : 'Announce correct'}
+          </Text>
+          <Switch
+            value={announceMode === 'celebration'}
+            onValueChange={(value) => setAnnounceMode(value ? 'celebration' : 'correct')}
+            trackColor={{ false: colors.border, true: colors.accent }}
+            thumbColor={colors.surface}
+          />
+          <Text style={[styles.announceLabel, { color: announceMode === 'celebration' ? colors.text : colors.textFaint }]}>
+            {isNarrow ? 'Celebrate' : 'Announce Celebration'}
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={[styles.muteButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+          onPress={() => setMuted(!muted)}
+        >
+          <Text style={styles.muteText}>{muted ? '🔇' : '🔊'}</Text>
+        </TouchableOpacity>
+      </View>
+      {invalidTag ? (
+        <View style={styles.noResultsBox}>
+          <Text style={[styles.noResultsText, { color: colors.danger }]}>Tag error</Text>
+          <Text style={[styles.noResultsHint, { color: colors.textFaint }]}>
+            Tag: "{invalidTag}" doesn't exist
+          </Text>
+        </View>
+      ) : noResults || !currentCard ? (
+        <View style={styles.noResultsBox}>
+          <Text style={[styles.noResultsText, { color: colors.text }]}>None available</Text>
+          <Text style={[styles.noResultsHint, { color: colors.textFaint }]}>
+            No cards match the current filters - try widening categories, difficulty, or tags.
+          </Text>
+        </View>
+      ) : (
+        <FlashCardComponent
+          card={currentCard}
+          choices={choices}
+          onCorrect={handleCorrect}
+          muted={muted}
+          announceMode={announceMode}
+        />
+      )}
+    </View>
+  );
+
+  // --- Difficulty stepper + tag filter panel content - shared between
+  // layouts, same as categoriesPanel above. ---
+  const filtersPanel = (
+    <>
+      <Text style={[styles.panelTitle, { color: colors.textFaint }]}>Difficulty</Text>
+      <View style={styles.stepperRow}>
+        <TouchableOpacity
+          style={[styles.stepperButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+          onPress={() => handleDifficultyChange(-1)}
+          disabled={maxDifficulty <= 1}
+        >
+          <Text style={[styles.stepperButtonText, { color: colors.text }]}>−</Text>
+        </TouchableOpacity>
+        <Text style={[styles.stepperValue, { color: colors.text }]}>{maxDifficulty}</Text>
+        <TouchableOpacity
+          style={[styles.stepperButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+          onPress={() => handleDifficultyChange(1)}
+          disabled={maxDifficulty >= difficultyCeiling}
+        >
+          <Text style={[styles.stepperButtonText, { color: colors.text }]}>+</Text>
+        </TouchableOpacity>
+      </View>
+      <Text style={[styles.stepperHint, { color: colors.textFaint }]}>max out of {difficultyCeiling}</Text>
+
+      <Text style={[styles.panelTitle, { color: colors.textFaint, marginTop: 16 }]}>Tags</Text>
+      <View style={styles.tagInputRow}>
+        <TextInput
+          style={[styles.tagInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.text }]}
+          placeholder="add a tag..."
+          placeholderTextColor={colors.textFaint}
+          value={tagInput}
+          onChangeText={setTagInput}
+          onSubmitEditing={handleAddTag}
+          returnKeyType="done"
+        />
+        <TouchableOpacity
+          style={[styles.tagAddButton, { backgroundColor: colors.accent }]}
+          onPress={handleAddTag}
+        >
+          <Text style={[styles.tagAddButtonText, { color: colors.accentText }]}>+</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView style={isNarrow ? styles.categoryListNarrow : styles.categoryList}>
+        {selectedTags.length === 0 && tagSuggestions.length > 0 && (
+          <>
+            <Text style={[styles.suggestionsLabel, { color: colors.textFaint }]}>Suggestions</Text>
+            <View style={styles.tagBubbleWrap}>
+              {tagSuggestions.map(tag => (
+                <TouchableOpacity
+                  key={tag}
+                  style={[styles.tagBubble, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                  onPress={() => addTag(tag)}
+                >
+                  <Text style={[styles.tagBubbleText, { color: colors.textFaint }]}>{tag} +</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </>
+        )}
+        <View style={styles.tagBubbleWrap}>
+          {selectedTags.map(tag => (
+            <TouchableOpacity
+              key={tag}
+              style={[styles.tagBubble, { backgroundColor: colors.accent, borderColor: colors.accent }]}
+              onPress={() => handleRemoveTag(tag)}
+            >
+              <Text style={[styles.tagBubbleText, { color: colors.accentText }]}>{tag} ✕</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </ScrollView>
+
+      <TouchableOpacity style={[styles.applyButton, { backgroundColor: colors.accent }]} onPress={loadSession}>
+        <Text style={[styles.applyText, { color: colors.accentText }]}>Apply</Text>
+      </TouchableOpacity>
+    </>
+  );
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <Text style={[styles.progress, { color: colors.textFaint }]}>
         {getActiveCards().length} cards remaining
       </Text>
 
-      <View style={styles.columns}>
-
-        {/* Left panel - category toggles */}
-        <View style={[styles.leftPanel, { backgroundColor: colors.surfaceAlt, borderRightColor: colors.border }]}>
-          <Text style={[styles.panelTitle, { color: colors.textFaint }]}>Categories</Text>
-          <ScrollView style={styles.categoryList}>
-
-            {/* Word categories */}
-            {categories.map(cat => {
-              const active = selectedCategories.includes(cat);
-              return (
-                <TouchableOpacity
-                  key={cat}
-                  style={[
-                    styles.categoryChip,
-                    { backgroundColor: colors.surface, borderColor: colors.border },
-                    active && { backgroundColor: colors.accent, borderColor: colors.accent },
-                  ]}
-                  onPress={() => handleCategoryToggle(cat)}
-                >
-                  <Text style={[
-                    styles.categoryText,
-                    { color: colors.textFaint },
-                    active && { color: colors.accentText, fontWeight: 'bold' },
-                  ]}>
-                    {cat}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-
-            {/* Letters section */}
-            <Text style={[styles.panelTitle, { color: colors.textFaint, marginTop: 16 }]}>Letters</Text>
-            {LETTER_CATEGORIES.map(cat => {
-              const active = selectedLetterCategories.includes(cat);
-              return (
-                <TouchableOpacity
-                  key={cat}
-                  style={[
-                    styles.categoryChip,
-                    { backgroundColor: colors.surface, borderColor: colors.border },
-                    active && { backgroundColor: colors.accent, borderColor: colors.accent },
-                  ]}
-                  onPress={() => handleLetterCategoryToggle(cat)}
-                >
-                  <Text style={[
-                    styles.categoryText,
-                    { color: colors.textFaint },
-                    active && { color: colors.accentText, fontWeight: 'bold' },
-                  ]}>
-                    {cat}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-
-            {/* Mode selection - only show if letters selected */}
-            {selectedLetterCategories.length > 0 && (
-              <>
-                <Text style={[styles.panelTitle, { color: colors.textFaint, marginTop: 16 }]}>Mode</Text>
-                {LETTER_MODES.map((mode, index) => {
-                  const active = selectedModes.includes(mode);
-                  return (
-                    <TouchableOpacity
-                      key={index}
-                      style={[
-                        styles.categoryChip,
-                        { backgroundColor: colors.surface, borderColor: colors.border },
-                        active && { backgroundColor: colors.accent, borderColor: colors.accent },
-                      ]}
-                      onPress={() => handleModeToggle(mode)}
-                    >
-                      <Text style={[
-                        styles.categoryText,
-                        { color: colors.textFaint },
-                        active && { color: colors.accentText, fontWeight: 'bold' },
-                      ]}>
-                        {mode.question} → {mode.answer}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </>
-            )}
-
-          </ScrollView>
-
-          <TouchableOpacity style={[styles.applyButton, { backgroundColor: colors.accent }]} onPress={loadSession}>
-            <Text style={[styles.applyText, { color: colors.accentText }]}>Apply</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Center - card box with mute button */}
-        <View style={styles.centerPanel}>
-          <View style={[styles.cardBox, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
-            <View style={styles.cardBoxHeader}>
-              <View style={styles.announceToggleRow}>
-                <Text style={[styles.announceLabel, { color: announceMode === 'correct' ? colors.text : colors.textFaint }]}>
-                  Announce correct
-                </Text>
-                <Switch
-                  value={announceMode === 'celebration'}
-                  onValueChange={(value) => setAnnounceMode(value ? 'celebration' : 'correct')}
-                  trackColor={{ false: colors.border, true: colors.accent }}
-                  thumbColor={colors.surface}
-                />
-                <Text style={[styles.announceLabel, { color: announceMode === 'celebration' ? colors.text : colors.textFaint }]}>
-                  Announce Celebration
-                </Text>
-              </View>
-              <TouchableOpacity
-                style={[styles.muteButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                onPress={() => setMuted(!muted)}
-              >
-                <Text style={styles.muteText}>{muted ? '🔇' : '🔊'}</Text>
-              </TouchableOpacity>
-            </View>
-            {invalidTag ? (
-              <View style={styles.noResultsBox}>
-                <Text style={[styles.noResultsText, { color: colors.danger }]}>Tag error</Text>
-                <Text style={[styles.noResultsHint, { color: colors.textFaint }]}>
-                  Tag: "{invalidTag}" doesn't exist
-                </Text>
-              </View>
-            ) : noResults || !currentCard ? (
-              <View style={styles.noResultsBox}>
-                <Text style={[styles.noResultsText, { color: colors.text }]}>None available</Text>
-                <Text style={[styles.noResultsHint, { color: colors.textFaint }]}>
-                  No cards match the current filters - try widening categories, difficulty, or tags.
-                </Text>
-              </View>
-            ) : (
-              <FlashCardComponent
-                card={currentCard}
-                choices={choices}
-                onCorrect={handleCorrect}
-                muted={muted}
-                announceMode={announceMode}
-              />
-            )}
+      {isNarrow ? (
+        // Narrow/phone layout: card first (the actual point of the screen),
+        // then categories, then difficulty/tags, all stacked full-width and
+        // scrolling together - a fixed 3-column layout with 200px side
+        // panels just doesn't fit a ~360-430px phone viewport.
+        <ScrollView contentContainerStyle={styles.narrowContent}>
+          <View style={styles.centerPanelNarrow}>
+            {cardBoxContent}
+          </View>
+          <View style={[styles.panelNarrow, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
+            {categoriesPanel}
+          </View>
+          <View style={[styles.panelNarrow, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
+            {filtersPanel}
+          </View>
+        </ScrollView>
+      ) : (
+        <View style={styles.columns}>
+          <View style={[styles.leftPanel, { backgroundColor: colors.surfaceAlt, borderRightColor: colors.border }]}>
+            {categoriesPanel}
+          </View>
+          <View style={styles.centerPanel}>
+            {cardBoxContent}
+          </View>
+          <View style={[styles.rightPanel, { backgroundColor: colors.surfaceAlt, borderLeftColor: colors.border }]}>
+            {filtersPanel}
           </View>
         </View>
-
-        {/* Right panel - difficulty cap + tag filter */}
-        <View style={[styles.rightPanel, { backgroundColor: colors.surfaceAlt, borderLeftColor: colors.border }]}>
-          <Text style={[styles.panelTitle, { color: colors.textFaint }]}>Difficulty</Text>
-          <View style={styles.stepperRow}>
-            <TouchableOpacity
-              style={[styles.stepperButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
-              onPress={() => handleDifficultyChange(-1)}
-              disabled={maxDifficulty <= 1}
-            >
-              <Text style={[styles.stepperButtonText, { color: colors.text }]}>−</Text>
-            </TouchableOpacity>
-            <Text style={[styles.stepperValue, { color: colors.text }]}>{maxDifficulty}</Text>
-            <TouchableOpacity
-              style={[styles.stepperButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
-              onPress={() => handleDifficultyChange(1)}
-              disabled={maxDifficulty >= difficultyCeiling}
-            >
-              <Text style={[styles.stepperButtonText, { color: colors.text }]}>+</Text>
-            </TouchableOpacity>
-          </View>
-          <Text style={[styles.stepperHint, { color: colors.textFaint }]}>max out of {difficultyCeiling}</Text>
-
-          <Text style={[styles.panelTitle, { color: colors.textFaint, marginTop: 16 }]}>Tags</Text>
-          <View style={styles.tagInputRow}>
-            <TextInput
-              style={[styles.tagInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.text }]}
-              placeholder="add a tag..."
-              placeholderTextColor={colors.textFaint}
-              value={tagInput}
-              onChangeText={setTagInput}
-              onSubmitEditing={handleAddTag}
-              returnKeyType="done"
-            />
-            <TouchableOpacity
-              style={[styles.tagAddButton, { backgroundColor: colors.accent }]}
-              onPress={handleAddTag}
-            >
-              <Text style={[styles.tagAddButtonText, { color: colors.accentText }]}>+</Text>
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView style={styles.categoryList}>
-            {selectedTags.length === 0 && tagSuggestions.length > 0 && (
-              <>
-                <Text style={[styles.suggestionsLabel, { color: colors.textFaint }]}>Suggestions</Text>
-                <View style={styles.tagBubbleWrap}>
-                  {tagSuggestions.map(tag => (
-                    <TouchableOpacity
-                      key={tag}
-                      style={[styles.tagBubble, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                      onPress={() => addTag(tag)}
-                    >
-                      <Text style={[styles.tagBubbleText, { color: colors.textFaint }]}>{tag} +</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </>
-            )}
-            <View style={styles.tagBubbleWrap}>
-              {selectedTags.map(tag => (
-                <TouchableOpacity
-                  key={tag}
-                  style={[styles.tagBubble, { backgroundColor: colors.accent, borderColor: colors.accent }]}
-                  onPress={() => handleRemoveTag(tag)}
-                >
-                  <Text style={[styles.tagBubbleText, { color: colors.accentText }]}>{tag} ✕</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </ScrollView>
-
-          <TouchableOpacity style={[styles.applyButton, { backgroundColor: colors.accent }]} onPress={loadSession}>
-            <Text style={[styles.applyText, { color: colors.accentText }]}>Apply</Text>
-          </TouchableOpacity>
-        </View>
-
-      </View>
+      )}
     </View>
   );
 }
@@ -741,11 +782,23 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 8,
   },
+  // Narrow/stacked layout: the parent is a ScrollView (unbounded height),
+  // so flex:1 has nothing to fill against - cap the height instead and let
+  // this list scroll on its own within that box.
+  categoryListNarrow: {
+    maxHeight: 260,
+    gap: 8,
+  },
   centerPanel: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
+  },
+  centerPanelNarrow: {
+    width: '100%',
+    alignItems: 'center',
+    padding: 16,
   },
   cardBox: {
     width: '100%',
@@ -756,10 +809,34 @@ const styles = StyleSheet.create({
     flex: 1,
     maxHeight: 720,
   },
+  // Narrow layout equivalent of cardBox - independent (not merged with
+  // cardBox) since flex:1/maxHeight assume a bounded flex-row parent that
+  // doesn't exist once this is stacked inside a ScrollView.
+  cardBoxNarrow: {
+    width: '100%',
+    maxWidth: 540,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 16,
+    minHeight: 480,
+  },
+  narrowContent: {
+    paddingTop: 8,
+    paddingBottom: 32,
+    gap: 16,
+  },
+  panelNarrow: {
+    width: '100%',
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
   cardBoxHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 8,
     marginBottom: 8,
   },
   announceToggleRow: {

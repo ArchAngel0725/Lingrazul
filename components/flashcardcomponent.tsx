@@ -9,6 +9,7 @@ import * as Speech from 'expo-speech';
 import { Audio } from 'expo-av';
 import { FlashCard, LetterCard } from '../lib/cards';
 import { usePreferences } from '../lib/preferences';
+import { useIsNarrow } from '../lib/responsive';
 
 const CELEBRATION_PHRASES = [
   'すごい！', 'すごいね！', 'やるじゃん！', 'さすが！', 'かっこいい！',
@@ -93,6 +94,7 @@ const getAnswer = (card: FlashCard | LetterCard): string => {
 
 export default function FlashCardComponent({ card, choices, onCorrect, muted, announceMode }: Props) {
   const { colors, customCelebrationEnabled, customCelebrationSoundUri } = usePreferences();
+  const isNarrow = useIsNarrow();
   const [visibleChoices, setVisibleChoices] = useState<string[]>(choices);
   const [wrongCount, setWrongCount] = useState(0);
   // Tracks whether the question was tapped to hear it spoken this card.
@@ -173,7 +175,10 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
 
   return (
     <View style={styles.container}>
-      <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <View style={[
+        isNarrow ? styles.cardNarrow : styles.card,
+        { backgroundColor: colors.surface, borderColor: colors.border },
+      ]}>
         {/* Tap the question to hear it spoken. This does not check `muted` -
             that's intentional, tapping always plays the sound. It does mark
             heardHint so the eventual correct answer won't be scored. */}
@@ -181,7 +186,7 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
           setHeardHint(true);
           Speech.speak(getSpokenQuestion(card), { language: 'ja' });
         }}>
-          <Text style={[styles.mainText, { color: colors.text }]}>{getQuestion(card)}</Text>
+          <Text style={[isNarrow ? styles.mainTextNarrow : styles.mainText, { color: colors.text }]}>{getQuestion(card)}</Text>
         </TouchableOpacity>
         {/* Category label (e.g. "verb", "particle") is only meaningful for
             word cards - letter cards use categories like "s-row" purely for
@@ -191,7 +196,7 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
         )}
       </View>
 
-      <View style={styles.choicesContainer}>
+      <View style={isNarrow ? styles.choicesContainerNarrow : styles.choicesContainer}>
         {visibleChoices.map((choice, index) => (
           <TouchableOpacity
             key={index}
@@ -224,9 +229,33 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     marginBottom: 32,
   },
+  // Smaller padding/minHeight so the card doesn't eat the whole viewport on
+  // a phone-width screen - the desktop version's 32px padding + 200px min
+  // height leaves very little room for the choice buttons below it once the
+  // browser window is only ~360-430px tall in landscape or the keyboard is up.
+  cardNarrow: {
+    width: '100%',
+    maxWidth: 400,
+    minHeight: 140,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+    borderWidth: 1,
+    marginBottom: 20,
+  },
   mainText: {
     fontSize: 72,
     fontWeight: 'bold',
+  },
+  // 72px kanji/kana glyphs comfortably fill a desktop card but overflow or
+  // crowd out a 375px-wide phone screen, especially for longer romaji
+  // strings (e.g. multi-character verb readings) - shrunk and allowed to
+  // wrap instead of forcing horizontal scroll.
+  mainTextNarrow: {
+    fontSize: 44,
+    fontWeight: 'bold',
+    textAlign: 'center',
   },
   category: {
     fontSize: 12,
@@ -239,6 +268,12 @@ const styles = StyleSheet.create({
     maxWidth: 400,
     gap: 12,
     marginBottom: 32,
+  },
+  choicesContainerNarrow: {
+    width: '100%',
+    maxWidth: 400,
+    gap: 10,
+    marginBottom: 20,
   },
   choiceButton: {
     padding: 18,

@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
 import { usePreferences } from '../../lib/preferences';
+import { useIsNarrow } from '../../lib/responsive';
 
 type Section = 'ja-forum' | 'en-forum' | 'lessons';
 
@@ -19,35 +20,44 @@ const NAV_ITEMS: { key: Section; label: string }[] = [
 
 export default function CommunityScreen() {
   const { colors } = usePreferences();
+  const isNarrow = useIsNarrow();
   const [section, setSection] = useState<Section>('lessons');
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {/* Left nav */}
-      <View style={[styles.leftPanel, { backgroundColor: colors.surfaceAlt, borderRightColor: colors.border }]}>
-        <Text style={[styles.panelTitle, { color: colors.textFaint }]}>Community</Text>
-        {NAV_ITEMS.map(item => {
-          const active = section === item.key;
-          return (
-            <TouchableOpacity
-              key={item.key}
-              style={[
-                styles.navItem,
-                { borderColor: colors.border },
-                active && { backgroundColor: colors.accent, borderColor: colors.accent },
-              ]}
-              onPress={() => setSection(item.key)}
-            >
-              <Text style={[
-                styles.navText,
-                { color: colors.textMuted },
-                active && { color: colors.accentText, fontWeight: 'bold' },
-              ]}>
-                {item.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
+    <View style={[isNarrow ? styles.containerNarrow : styles.container, { backgroundColor: colors.background }]}>
+      {/* Left nav - stacks above the content and lays its items out
+          horizontally on narrow screens instead of a tall vertical list
+          down the side, since there's no room for a 200px side column on
+          a phone-width viewport. */}
+      <View style={[
+        isNarrow ? styles.leftPanelNarrow : styles.leftPanel,
+        { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+      ]}>
+        {!isNarrow && <Text style={[styles.panelTitle, { color: colors.textFaint }]}>Community</Text>}
+        <View style={isNarrow ? styles.navRowNarrow : undefined}>
+          {NAV_ITEMS.map(item => {
+            const active = section === item.key;
+            return (
+              <TouchableOpacity
+                key={item.key}
+                style={[
+                  isNarrow ? styles.navItemNarrow : styles.navItem,
+                  { borderColor: colors.border },
+                  active && { backgroundColor: colors.accent, borderColor: colors.accent },
+                ]}
+                onPress={() => setSection(item.key)}
+              >
+                <Text style={[
+                  styles.navText,
+                  { color: colors.textMuted },
+                  active && { color: colors.accentText, fontWeight: 'bold' },
+                ]}>
+                  {item.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
       </View>
 
       {/* Main content */}
@@ -114,10 +124,30 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'row',
   },
+  containerNarrow: {
+    flex: 1,
+    flexDirection: 'column',
+  },
   leftPanel: {
     width: 200,
     borderRightWidth: 1,
     padding: 16,
+  },
+  leftPanelNarrow: {
+    width: '100%',
+    borderBottomWidth: 1,
+    padding: 12,
+  },
+  navRowNarrow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  navItemNarrow: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    borderWidth: 1,
   },
   panelTitle: {
     fontSize: 11,
@@ -175,8 +205,10 @@ const styles = StyleSheet.create({
   },
   lessonsHeader: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
+    gap: 8,
     marginBottom: 4,
   },
   createButton: {
