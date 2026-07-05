@@ -91,3 +91,11 @@ export function getDecoys(correctAnswer: string): string[] {
   const shuffled = pool.sort(() => Math.random() - 0.5);
   return shuffled.slice(0, 3);
 }
+// Moves a card from the front to a random position in the queue
+export function shuffleCurrentToBack(): void {
+  if (activeQueue.length <= 1) return;
+  const current = activeQueue.shift(); // remove from front
+  if (!current) return;
+  const randomIndex = Math.floor(Math.random() * activeQueue.length) + 1;
+  activeQueue.splice(randomIndex, 0, current); // insert at random position
+}

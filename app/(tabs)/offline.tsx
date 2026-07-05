@@ -3,7 +3,7 @@
 // Loads cards from Supabase on mount, manages the active queue,
 // and clears all session state when the user navigates away.
 
-import { useEffect, useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import FlashCardComponent from '../../components/flashcardcomponent';
@@ -17,6 +17,7 @@ import {
   addCards,
   clearQueue,
   getDecoys,
+  shuffleCurrentToBack,
 } from '../../lib/cardQueue';
 
 export default function OfflineScreen() {
@@ -30,15 +31,12 @@ export default function OfflineScreen() {
     setLoading(true);
     setSessionDone(false);
 
-    // Fetch 10 study cards and 20 decoy words separately
-    const studyCards = await fetchFlashCards(10);
+    // Fetch 20 study cards and 20 decoy words separately
+    const studyCards = await fetchFlashCards(20);
     const decoyCards = await fetchFlashCards(20);
     const decoyWords = decoyCards.map(c => c.nativeLanguage);
 
-    // Initialize the queue with study cards and decoy word pool
     initQueue(studyCards, decoyWords);
-
-    // Show the first card
     showNextCard();
     setLoading(false);
   };
@@ -52,11 +50,10 @@ export default function OfflineScreen() {
       return;
     }
 
-    // Always show the first card in the queue
     const next = queue[0].card;
     setCurrentCard(next);
 
-    // Build multiple choice options - 1 correct + 3 decoys, shuffled
+    // Build multiple choice - 1 correct + 3 decoys shuffled
     const decoys = getDecoys(next.nativeLanguage);
     const allChoices = [next.nativeLanguage, ...decoys];
     const shuffled = allChoices.sort(() => Math.random() - 0.5);
@@ -66,35 +63,22 @@ export default function OfflineScreen() {
   // --- Called when user taps the correct answer ---
   const handleCorrect = () => {
     if (!currentCard) return;
-
-    // Mark correct in queue - may rest the card if threshold reached
     markCorrect(currentCard.id);
-
-    // Check if queue needs refilling (dropped to 50%)
+    shuffleCurrentToBack();
     if (needsRefill()) {
-      fetchFlashCards(5).then(newCards => {
-        addCards(newCards);
-      });
+      fetchFlashCards(10).then(newCards => addCards(newCards));
     }
-
-    // Advance to next card
     showNextCard();
   };
 
-  // --- Clear all session state when user leaves the tab ---
+  // --- Clear session state when user leaves the tab ---
   useFocusEffect(
     useCallback(() => {
-      // Tab is focused - load a fresh session
       loadSession();
-
-      return () => {
-        // Tab lost focus - wipe the queue
-        clearQueue();
-      };
+      return () => clearQueue();
     }, [])
   );
 
-  // --- Render states ---
   if (loading) {
     return (
       <View style={styles.center}>
@@ -120,12 +104,9 @@ export default function OfflineScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Queue progress indicator */}
       <Text style={styles.progress}>
         {getActiveCards().length} cards remaining
       </Text>
-
-      {/* The flashcard with multiple choice */}
       <FlashCardComponent
         card={currentCard}
         choices={choices}

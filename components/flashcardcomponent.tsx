@@ -5,6 +5,16 @@
 import { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { FlashCard } from '../lib/cards';
+import * as Speech from 'expo-speech';
+
+const CELEBRATION_PHRASES = [
+  'すごい！', 'すごいね！', 'やるじゃん！', 'さすが！', 'かっこいい！',
+  'やばい！', 'マジで！', 'うわあ！', 'いいね！', 'よくできました！',
+  'その通り！', '正解！', '合ってる！', 'バッチリ！', '完璧！',
+  'よし！', 'パーフェクト！', 'ナイス！', 'ブラボー！', '天才！',
+  '神！', 'やるね！', 'さすがだね！', 'もちろん！', 'えらい！',
+  'よかった！', '上手！', '頑張ったね！', '素晴らしい！', '最高！',
+];
 
 interface Props {
   card: FlashCard;
@@ -15,34 +25,43 @@ interface Props {
 }
 
 export default function FlashCardComponent({ card, choices, onCorrect, onKnow, onNoIdea }: Props) {
-  // Track which choices are still visible - wrong ones vanish on tap
   const [visibleChoices, setVisibleChoices] = useState<string[]>(choices);
+  const [wrongCount, setWrongCount] = useState(0);
 
-  // Reset visible choices whenever the card changes
   useEffect(() => {
     setVisibleChoices(choices);
+    setWrongCount(0);
   }, [card.id, choices]);
+
+  // wrongCount penalty lowers pitch/rate the more wrong answers were given
+  const speakCelebration = (count: number) => {
+    const phrase = CELEBRATION_PHRASES[Math.floor(Math.random() * CELEBRATION_PHRASES.length)];
+    const penalty = count * 0.05;
+    const pitch = Math.max(0.5, (0.9 + Math.random() * 0.1) - penalty);
+    const rate = Math.max(0.5, (0.9 + Math.random() * 0.1) - penalty);
+    Speech.speak(phrase, { language: 'ja', pitch, rate });
+  };
 
   const handleChoice = (choice: string) => {
     if (choice === card.nativeLanguage) {
-      // Correct answer - advance
+      speakCelebration(wrongCount);
+      setWrongCount(0);
       onCorrect();
     } else {
-      // Wrong answer - vanish it silently
+      setWrongCount(prev => prev + 1);
       setVisibleChoices(prev => prev.filter(c => c !== choice));
     }
   };
 
   return (
     <View style={styles.container}>
-
-      {/* The card face - shows the Japanese word */}
       <View style={styles.card}>
-        <Text style={styles.mainText}>{card.learningLanguage}</Text>
+        <TouchableOpacity onPress={() => Speech.speak(card.learningLanguage, { language: 'ja' })}>
+          <Text style={styles.mainText}>{card.learningLanguage}</Text>
+        </TouchableOpacity>
         <Text style={styles.category}>{card.category}</Text>
       </View>
 
-      {/* Multiple choice options */}
       <View style={styles.choicesContainer}>
         {visibleChoices.map((choice, index) => (
           <TouchableOpacity
@@ -55,7 +74,6 @@ export default function FlashCardComponent({ card, choices, onCorrect, onKnow, o
         ))}
       </View>
 
-      {/* Algorithm signal buttons - shown below choices */}
       <View style={styles.algorithmButtons}>
         <TouchableOpacity style={styles.noIdea} onPress={onNoIdea}>
           <Text style={styles.algorithmText}>Too hard</Text>
@@ -64,7 +82,6 @@ export default function FlashCardComponent({ card, choices, onCorrect, onKnow, o
           <Text style={styles.algorithmTextDark}>Too easy</Text>
         </TouchableOpacity>
       </View>
-
     </View>
   );
 }
