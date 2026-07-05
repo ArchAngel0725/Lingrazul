@@ -1,7 +1,44 @@
 // ALark-Claude_Review@MEGADATA
 import { supabase } from './supabase';
-import { FlashCard, LetterCard } from './cards';
-export async function fetchFlashCards(limit: number = 20, categories?: string[]): Promise<FlashCard[]> {
+import { FlashCard, LetterCard, LetterScript } from './cards';
+
+export interface FilterOptions {
+  maxDifficulty: number;
+  tags: string[];
+}
+
+// Live union of every tag + the highest difficulty value across both
+// word_descriptions and letters_japanese. There's no fixed enum for either
+// column (same reasoning as word categories in offline.tsx), so this reads
+// the actual data every time rather than hardcoding a scale that could
+// silently drift out of date as new rows get added.
+export async function fetchFilterOptions(): Promise<FilterOptions> {
+  const [{ data: wordRows }, { data: letterRows }] = await Promise.all([
+    supabase.from('word_descriptions').select('difficulty,tags'),
+    supabase.from('letters_japanese').select('difficulty,tags'),
+  ]);
+
+  const rows = [...(wordRows ?? []), ...(letterRows ?? [])];
+
+  let maxDifficulty = 1;
+  const tagSet = new Set<string>();
+  for (const row of rows) {
+    if (typeof row.difficulty === 'number' && row.difficulty > maxDifficulty) {
+      maxDifficulty = row.difficulty;
+    }
+    for (const t of row.tags ?? []) {
+      tagSet.add(t as string);
+    }
+  }
+
+  return { maxDifficulty, tags: [...tagSet].sort() };
+}
+export async function fetchFlashCards(
+  limit: number = 20,
+  categories?: string[],
+  maxDifficulty?: number,
+  tags?: string[]
+): Promise<FlashCard[]> {
   // Fetch random rows from word_descriptions
   let query = supabase
     .from('word_descriptions')
@@ -11,6 +48,17 @@ export async function fetchFlashCards(limit: number = 20, categories?: string[])
       // Filter by categories if provided
   if (categories && categories.length > 0) {
     query = query.in('category', categories);
+  }
+
+  // Cap by difficulty if a max was applied
+  if (typeof maxDifficulty === 'number') {
+    query = query.lte('difficulty', maxDifficulty);
+  }
+
+  // Match ALL selected tags (row's tags array must contain every one) -
+  // an empty/undefined tags list disregards this filter entirely.
+  if (tags && tags.length > 0) {
+    query = query.contains('tags', tags);
   }
 
 const { data: descriptions, error } = await query;
@@ -59,8 +107,10 @@ const { data: descriptions, error } = await query;
 // mode determines which script is shown as question and which is the answer
 export async function fetchLetterCards(
   limit: number = 20,
-  modes: { question: 'hiragana' | 'katakana' | 'romaji', answer: 'hiragana' | 'katakana' | 'romaji' }[],
-  categories?: string[]
+  modes: { question: LetterScript, answer: LetterScript }[],
+  categories?: string[],
+  maxDifficulty?: number,
+  tags?: string[]
 ): Promise<LetterCard[]> {
   let query = supabase
     .from('letters_japanese')
@@ -71,6 +121,14 @@ export async function fetchLetterCards(
     query = query.in('category', categories);
   }
 
+  if (typeof maxDifficulty === 'number') {
+    query = query.lte('difficulty', maxDifficulty);
+  }
+
+  if (tags && tags.length > 0) {
+    query = query.contains('tags', tags);
+  }
+
   const { data, error } = await query;
 
   if (error || !data) {
@@ -78,23 +136,39 @@ export async function fetchLetterCards(
     return [];
   }
 
-  // For each row pick a random mode from the enabled modes
-  const cards: LetterCard[] = data.map(row => {
-    const mode = modes[Math.floor(Math.random() * modes.length)];
-    return {
-      id: row.id,
-      cardType: 'letter',
-      difficulty: row.difficulty,
-      category: row.category,
-      language: 'ja',
-      tags: row.tags ?? [],
-      hiragana: row.hiragana,
-      katakana: row.katakana,
-      romaji: row.romaji,
-      questionScript: mode.question,
-      answerScript: mode.answer,
-    };
-  });
+  // For each row pick a random mode from the enabled modes - but only from
+  // modes that row can actually satisfy. A 'kanji' question/answer script
+  // needs row.has_kanji to be true (and row.kanji populated); ordinary kana
+  // rows don't have that, so a kanji-only mode selection would otherwise
+  // leave nothing pickable. Rows that end up with zero compatible modes
+  // (e.g. modes is empty, or every selected mode needs kanji on a
+  // non-kanji row) are skipped rather than crashing on an undefined mode.
+  const cards: LetterCard[] = data
+    .map(row => {
+      const compatibleModes = modes.filter(m =>
+        (m.question !== 'kanji' || row.has_kanji) &&
+        (m.answer !== 'kanji' || row.has_kanji)
+      );
+      if (compatibleModes.length === 0) return null;
+
+      const mode = compatibleModes[Math.floor(Math.random() * compatibleModes.length)];
+      return {
+        id: row.id,
+        cardType: 'letter' as const,
+        difficulty: row.difficulty,
+        category: row.category,
+        language: 'ja',
+        tags: row.tags ?? [],
+        hiragana: row.hiragana,
+        katakana: row.katakana,
+        romaji: row.romaji,
+        kanji: row.kanji ?? null,
+        hasKanji: row.has_kanji ?? false,
+        questionScript: mode.question,
+        answerScript: mode.answer,
+      };
+    })
+    .filter((c): c is LetterCard => c !== null);
 
   return cards;
 }

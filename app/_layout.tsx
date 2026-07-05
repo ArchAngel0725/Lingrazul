@@ -1,7 +1,10 @@
 import { Stack } from 'expo-router';
+import { PreferencesProvider } from '../lib/preferences';
 
 export default function RootLayout() {
   return (
-    <Stack screenOptions={{ headerShown: false }} />
+    <PreferencesProvider>
+      <Stack screenOptions={{ headerShown: false }} />
+    </PreferencesProvider>
   );
 }

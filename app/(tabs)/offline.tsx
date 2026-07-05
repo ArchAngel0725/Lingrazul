@@ -3,12 +3,12 @@
 // Three column layout: categories | flashcard | empty
 // Supports both word cards (FlashCard) and letter cards (LetterCard)
 
-import { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView } from 'react-native';
+import { useState, useCallback, useEffect } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView, TextInput, Switch } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import FlashCardComponent from '../../components/flashcardcomponent';
 import { FlashCard, LetterCard } from '../../lib/cards';
-import { fetchFlashCards, fetchLetterCards } from '../../lib/cardCashe';
+import { fetchFlashCards, fetchLetterCards, fetchFilterOptions } from '../../lib/cardCashe';
 import {
   initQueue,
   markCorrect,
@@ -18,21 +18,27 @@ import {
   clearQueue,
   getDecoys,
   shuffleCurrentToBack,
+  hasRestedCards,
+  recycleRestedCards,
 } from '../../lib/cardQueue';
 import { supabase } from '../../lib/supabase';
+import { usePreferences } from '../../lib/preferences';
+import {
+  loadStudyWordCategories,
+  saveStudyWordCategories,
+  loadStudyLetterCategories,
+  saveStudyLetterCategories,
+  loadStudyModeIndexes,
+  saveStudyModeIndexes,
+  loadStudyMaxDifficulty,
+  saveStudyMaxDifficulty,
+  loadStudyTags,
+  saveStudyTags,
+} from '../../lib/studyPreferences';
+import { WORD_CATEGORY_FALLBACK, LETTER_CATEGORIES } from '../../lib/categories';
+import { recordAnswer } from '../../lib/progress';
 
-const ALL_CATEGORIES = [
-  'demonstrative',
-  'kosoado',
-  'particle',
-  'verb',
-];
-
-const LETTER_CATEGORIES = [
-  'vowel', 'k-row', 's-row', 't-row', 'n-row',
-  'h-row', 'm-row', 'y-row', 'r-row', 'w-row',
-  'n-standalone', 'dakuten', 'handakuten'
-];
+const ALL_CATEGORIES = WORD_CATEGORY_FALLBACK;
 
 const LETTER_MODES = [
   { question: 'hiragana', answer: 'romaji' },
@@ -41,21 +47,88 @@ const LETTER_MODES = [
   { question: 'romaji', answer: 'katakana' },
   { question: 'hiragana', answer: 'katakana' },
   { question: 'katakana', answer: 'hiragana' },
+  // Kanji-only modes - only satisfiable by rows with has_kanji (see
+  // cardCashe.ts's per-row mode filtering). Kept separate from the plain
+  // kana modes above so a kanji-only session can default straight to one
+  // of these instead of the old kana-to-kana modes, which say nothing
+  // about the actual kanji character.
+  { question: 'kanji', answer: 'hiragana' },
+  { question: 'kanji', answer: 'romaji' },
+  { question: 'hiragana', answer: 'kanji' },
 ] as const;
 
+const KANJI_DEFAULT_MODE = LETTER_MODES.find(m => m.question === 'kanji' && m.answer === 'hiragana')!;
+
 export default function OfflineScreen() {
+  const { colors, muted, setMuted, announceMode, setAnnounceMode } = usePreferences();
   const [loading, setLoading] = useState(true);
   const [currentCard, setCurrentCard] = useState<FlashCard | LetterCard | null>(null);
   const [choices, setChoices] = useState<string[]>([]);
   const [sessionDone, setSessionDone] = useState(false);
+  // True when the currently applied filters matched zero cards on the very
+  // first fetch of a session (as opposed to sessionDone, which means the
+  // user actually studied cards and then ran out). Kept separate from
+  // sessionDone so the category/difficulty/tag panels stay visible and
+  // usable - a full-screen "session complete" page with no way back to the
+  // filters was a dead end when a filter combo (e.g. kanji + difficulty 1)
+  // legitimately has no matching rows.
+  const [noResults, setNoResults] = useState(false);
   const [selectedCategories, setSelectedCategories] = useState<string[]>(ALL_CATEGORIES);
   const [categories, setCategories] = useState<string[]>(ALL_CATEGORIES);
-  const [muted, setMuted] = useState(false);
   const [selectedLetterCategories, setSelectedLetterCategories] = useState<string[]>([]);
   const [selectedModes, setSelectedModes] = useState<typeof LETTER_MODES[number][]>([LETTER_MODES[0]]);
+  // Right panel: difficulty cap + tag filter. difficultyCeiling is the
+  // highest difficulty value actually present in the data (fetched live,
+  // same reasoning as word categories) - it's the stepper's upper bound and
+  // maxDifficulty's default when nothing's been persisted yet, so a fresh
+  // install starts uncapped instead of arbitrarily capped at some guessed
+  // scale. availableTags is the live union of every tag across both tables;
+  // selectedTags empty means "disregard tags", non-empty means "row must
+  // have ALL selected tags" (see cardCashe.ts's `.contains` filter).
+  const [difficultyCeiling, setDifficultyCeiling] = useState<number>(1);
+  const [maxDifficulty, setMaxDifficulty] = useState<number>(1);
+  // availableTags is the live universe of real tag strings (fetched from
+  // the data, not typed by hand) - used only to validate what the user
+  // types, never rendered as buttons. Tags are freeform per-row descriptors
+  // (e.g. "n5", "adjective", "loanword"), not a fixed category-like enum,
+  // so the input is a text box + bubbles rather than a preset chip list.
+  const [availableTags, setAvailableTags] = useState<string[]>([]);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState('');
+  // A handful of random real tags shown as tappable suggestions when
+  // selectedTags is empty, so a user who's never seen the tag universe
+  // still has an easy, guaranteed-valid starting point instead of guessing.
+  const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
+  // Set when Apply/session-load finds a selected tag that doesn't match
+  // anything in availableTags (typo or a tag that doesn't exist) - shown on
+  // the card face instead of running a fetch that would just silently
+  // return nothing.
+  const [invalidTag, setInvalidTag] = useState<string | null>(null);
+  // Flips true only after persisted filters have been restored into state
+  // above, so the effect that kicks off loadSession() always sees the
+  // restored values instead of a stale pre-restore closure.
+  const [prefsRestored, setPrefsRestored] = useState(false);
+  // Signed-in users get their answers written to user_progress; guests
+  // (userId null, the default) just don't get progress tracked.
+  const [userId, setUserId] = useState<string | null>(null);
 
-  // --- Fetch available word categories from Supabase ---
-  const loadCategories = async () => {
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setUserId(data.session?.user?.id ?? null));
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUserId(session?.user?.id ?? null);
+    });
+    return () => subscription.subscription.unsubscribe();
+  }, []);
+
+  // --- Fetch available word categories from Supabase, restoring the
+  // persisted selection (filtered against what's still actually available) ---
+  //
+  // storedCategories is null only when nothing has ever been saved (first
+  // run) - that's the one case that should default to "everything." An
+  // explicit empty selection ([], e.g. a kanji-only session that cleared
+  // word categories on purpose) must be respected as-is, not treated the
+  // same as "no preference" and silently reset back to all categories.
+  const loadCategories = async (storedCategories: string[] | null) => {
     const { data } = await supabase
       .from('word_descriptions')
       .select('category');
@@ -63,15 +136,121 @@ export default function OfflineScreen() {
     if (data) {
       const unique = [...new Set(data.map(d => d.category))] as string[];
       setCategories(unique);
-      setSelectedCategories(unique);
+      if (storedCategories === null) {
+        setSelectedCategories(unique);
+      } else {
+        setSelectedCategories(storedCategories.filter(c => unique.includes(c)));
+      }
     }
   };
 
-  // --- Toggle a word category on/off ---
+  // --- Fetch the live difficulty ceiling + tag universe, restoring the
+  // persisted maxDifficulty/tags selection (same null-vs-empty distinction
+  // as loadCategories: null means never set, defaults to uncapped/no-filter). ---
+  const loadFilterOptions = async (storedMaxDifficulty: number | null, storedTags: string[] | null) => {
+    const { maxDifficulty: ceiling, tags: allTags } = await fetchFilterOptions();
+    setDifficultyCeiling(ceiling);
+    setAvailableTags(allTags);
+    setMaxDifficulty(storedMaxDifficulty === null ? ceiling : Math.min(storedMaxDifficulty, ceiling));
+    // Unlike categories, don't silently drop a persisted tag that no longer
+    // matches availableTags - keep it as a bubble and let loadSession's
+    // validation surface it as a proper "doesn't exist" error instead.
+    setSelectedTags(storedTags ?? []);
+
+    // A handful of random real tags to show as tappable suggestions when
+    // nothing's typed yet - picked once per fetch (not re-randomized on
+    // every render) so they don't jump around while the panel is open.
+    const shuffled = [...allTags].sort(() => Math.random() - 0.5);
+    setTagSuggestions(shuffled.slice(0, 5));
+  };
+
+  // --- Step the difficulty cap up/down by 1, clamped to [1, difficultyCeiling] ---
+  const handleDifficultyChange = (delta: number) => {
+    setMaxDifficulty(prev => {
+      const next = Math.max(1, Math.min(difficultyCeiling, prev + delta));
+      saveStudyMaxDifficulty(next);
+      return next;
+    });
+  };
+
+  // --- Shared core for adding a tag bubble, persisting the result.
+  // Duplicate (case-insensitive) tags are ignored rather than added twice.
+  // Validity isn't checked here - that happens on Apply, so a typo still
+  // shows up as a bubble and only errors once applied. Used both by the
+  // text input (handleAddTag) and by tapping a suggestion chip. ---
+  const addTag = (tag: string) => {
+    const trimmed = tag.trim();
+    if (!trimmed) return;
+    setSelectedTags(prev => {
+      if (prev.some(t => t.toLowerCase() === trimmed.toLowerCase())) return prev;
+      const next = [...prev, trimmed];
+      saveStudyTags(next);
+      return next;
+    });
+  };
+
+  // --- Add whatever's currently typed in the tag input as a new bubble ---
+  const handleAddTag = () => {
+    addTag(tagInput);
+    setTagInput('');
+  };
+
+  // --- Remove a tag bubble, persisting the result ---
+  const handleRemoveTag = (tag: string) => {
+    setSelectedTags(prev => {
+      const next = prev.filter(t => t !== tag);
+      saveStudyTags(next);
+      return next;
+    });
+  };
+
+  // --- Toggle a word category on/off, persisting the result ---
   const handleCategoryToggle = (cat: string) => {
-    setSelectedCategories(prev =>
-      prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]
-    );
+    setSelectedCategories(prev => {
+      const next = prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat];
+      saveStudyWordCategories(next);
+      return next;
+    });
+  };
+
+  // --- Toggle a letter category on/off, persisting the result ---
+  //
+  // Turning on 'kanji' is treated as switching into a dedicated kanji
+  // session rather than adding kanji alongside whatever else was selected:
+  // it clears word categories and any other letter categories, and swaps
+  // in a kanji-testing mode. Without this, kanji rows would get mixed into
+  // an otherwise-unrelated word/kana session by default, and the mode list
+  // would still default to kana-only modes that never show the kanji
+  // character at all - which is what produced an empty, crash-inducing
+  // mode selection before (nothing in the old default modes felt relevant
+  // to kanji, so it got manually deselected down to nothing).
+  const handleLetterCategoryToggle = (cat: string) => {
+    if (cat === 'kanji' && !selectedLetterCategories.includes('kanji')) {
+      setSelectedLetterCategories(['kanji']);
+      saveStudyLetterCategories(['kanji']);
+
+      setSelectedCategories([]);
+      saveStudyWordCategories([]);
+
+      setSelectedModes([KANJI_DEFAULT_MODE]);
+      saveStudyModeIndexes([LETTER_MODES.indexOf(KANJI_DEFAULT_MODE)]);
+      return;
+    }
+
+    setSelectedLetterCategories(prev => {
+      const next = prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat];
+      saveStudyLetterCategories(next);
+      return next;
+    });
+  };
+
+  // --- Toggle a letter mode on/off, persisting by index (see studyPreferences.ts) ---
+  const handleModeToggle = (mode: typeof LETTER_MODES[number]) => {
+    setSelectedModes(prev => {
+      const next = prev.includes(mode) ? prev.filter(m => m !== mode) : [...prev, mode];
+      saveStudyModeIndexes(next.map(m => LETTER_MODES.indexOf(m)));
+      return next;
+    });
   };
 
   // --- Get correct answer text from any card type ---
@@ -82,37 +261,75 @@ export default function OfflineScreen() {
     return (card as FlashCard).nativeLanguage;
   };
 
+  // --- Fetches new cards using the currently applied word + letter categories ---
+  // Shared by the initial load and every refill path so none of them can
+  // silently drop a category the user actually applied.
+  const fetchAppliedCards = async (count: number) => {
+    const wordCards = selectedCategories.length > 0
+      ? await fetchFlashCards(count, selectedCategories, maxDifficulty, selectedTags)
+      : [];
+
+    const letterCards = selectedLetterCategories.length > 0
+      ? await fetchLetterCards(count, selectedModes, selectedLetterCategories, maxDifficulty, selectedTags)
+      : [];
+
+    return [...wordCards, ...letterCards].sort(() => Math.random() - 0.5);
+  };
+
   // --- Load session - fetches word cards, letter cards, and decoy pools ---
   const loadSession = async () => {
     setLoading(true);
     setSessionDone(false);
 
-    // Fetch word cards if any word categories selected
-    const studyCards = selectedCategories.length > 0
-      ? await fetchFlashCards(20, selectedCategories)
-      : [];
-
-    // Fetch letter cards if any letter categories selected
-    const letterCards = selectedLetterCategories.length > 0
-      ? await fetchLetterCards(20, selectedModes, selectedLetterCategories)
-      : [];
-
-    // Combine and shuffle both together
-    const allCards = [...studyCards, ...letterCards]
-      .sort(() => Math.random() - 0.5);
-
-    // Fetch word decoys
-    const decoyCards = await fetchFlashCards(20, selectedCategories.length > 0 ? selectedCategories : undefined);
-    const decoyWords = decoyCards.map(c => c.nativeLanguage);
-
-    // Fetch letter decoys if letters selected
-    const letterDecoyPool: string[] = [];
-    if (selectedLetterCategories.length > 0) {
-      const letterDecoys = await fetchLetterCards(30, selectedModes, selectedLetterCategories);
-      letterDecoys.forEach(c => {
-        letterDecoyPool.push((c as any)[c.answerScript]);
-      });
+    // Catch a typo'd/nonexistent tag before ever hitting the network - a
+    // `.contains('tags', [...])` filter with a tag nobody has would just
+    // silently come back empty, indistinguishable from a legitimately empty
+    // filter combo. Naming the actual bad tag is more useful than "None available".
+    const invalid = selectedTags.find(
+      t => !availableTags.some(at => at.toLowerCase() === t.toLowerCase())
+    );
+    if (invalid) {
+      clearQueue();
+      setCurrentCard(null);
+      setChoices([]);
+      setNoResults(false);
+      setInvalidTag(invalid);
+      setLoading(false);
+      return;
     }
+    setInvalidTag(null);
+
+    const allCards = await fetchAppliedCards(20);
+
+    // Nothing matches the applied filters at all - show the inline "None
+    // available" state instead of initializing a queue (which would just
+    // immediately bounce into the sessionDone dead-end - see noResults'
+    // declaration comment above).
+    if (allCards.length === 0) {
+      clearQueue();
+      setCurrentCard(null);
+      setChoices([]);
+      setNoResults(true);
+      setLoading(false);
+      return;
+    }
+    setNoResults(false);
+
+    // Fetch word decoys, tagged with each row's id so getDecoys() can
+    // exclude a decoy that happens to come from the same row as the
+    // current card.
+    const decoyCards = selectedCategories.length > 0
+      ? await fetchFlashCards(20, selectedCategories, maxDifficulty, selectedTags)
+      : [];
+    const decoyWords = decoyCards.map(c => ({ id: c.id, text: c.nativeLanguage }));
+
+    // Fetch letter decoys if letters selected - same id tagging, which
+    // matters more here since one row has 3 valid-looking readings
+    // (hiragana/katakana/romaji) depending on which mode was rolled.
+    const letterDecoyPool = selectedLetterCategories.length > 0
+      ? (await fetchLetterCards(30, selectedModes, selectedLetterCategories, maxDifficulty, selectedTags))
+          .map(c => ({ id: c.id, text: (c as any)[c.answerScript] as string }))
+      : [];
 
     initQueue(allCards, decoyWords, letterDecoyPool);
     showNextCard();
@@ -124,12 +341,26 @@ export default function OfflineScreen() {
     const queue = getActiveCards();
 
     if (queue.length === 0) {
-      fetchFlashCards(10, selectedCategories).then(newCards => {
-        if (newCards.length === 0) {
+      fetchAppliedCards(10).then(newCards => {
+        addCards(newCards);
+
+        // Nothing fresh came back (either the fetch was empty, or every
+        // row it returned is already mastered/resting this session). If
+        // there's anything resting, bring it back into rotation instead of
+        // stopping - a small filter combo (e.g. one kanji difficulty tier)
+        // will otherwise "master" its entire pool and then have nothing
+        // left to show, even though the user hasn't left the session.
+        if (getActiveCards().length === 0 && hasRestedCards()) {
+          recycleRestedCards();
+        }
+
+        // Truly nothing left anywhere - not fresh, not resting - means the
+        // applied filters have no more matching content at all.
+        if (getActiveCards().length === 0) {
           setSessionDone(true);
           return;
         }
-        addCards(newCards);
+
         showNextCard();
       });
       return;
@@ -142,169 +373,343 @@ export default function OfflineScreen() {
     const correctAnswer = getCorrectAnswer(next);
 
     // Build choices - 1 correct + 3 decoys shuffled
-    const decoys = getDecoys(correctAnswer, next.cardType);
+    const decoys = getDecoys(correctAnswer, next.cardType, next.id);
     const allChoices = [correctAnswer, ...decoys];
     const shuffled = allChoices.sort(() => Math.random() - 0.5);
     setChoices(shuffled);
   };
 
   // --- Called when user taps the correct answer ---
-  const handleCorrect = () => {
+  // usedHint is true if the question was tapped to hear it spoken this card -
+  // in that case the card still advances normally, but the answer is not
+  // written to user_progress at all (neither helps nor hurts accuracy),
+  // since hearing the reading spoken makes "getting it right" meaningless
+  // as a signal. This is independent of mute state by design.
+  const handleCorrect = (wasFirstTry: boolean, usedHint: boolean) => {
     if (!currentCard) return;
     markCorrect(currentCard.id);
+    if (userId && !usedHint) {
+      recordAnswer(userId, currentCard.id, wasFirstTry);
+    }
     shuffleCurrentToBack();
     if (needsRefill()) {
-      fetchFlashCards(10, selectedCategories).then(newCards => {
+      fetchAppliedCards(10).then(newCards => {
         addCards(newCards);
       });
     }
     showNextCard();
   };
 
-  // --- Clear session state when user leaves the tab ---
+  // --- On focus: restore persisted filters, then (via the effect below)
+  // kick off the session once those restored values have actually
+  // committed to state. Clear session state when the user leaves the tab. ---
   useFocusEffect(
     useCallback(() => {
-      loadCategories().then(() => loadSession());
-      return () => clearQueue();
+      let active = true;
+
+      (async () => {
+        const [
+          storedWordCategories,
+          storedLetterCategories,
+          storedModeIndexes,
+          storedMaxDifficulty,
+          storedTags,
+        ] = await Promise.all([
+          loadStudyWordCategories(),
+          loadStudyLetterCategories(),
+          loadStudyModeIndexes(),
+          loadStudyMaxDifficulty(),
+          loadStudyTags(),
+        ]);
+        if (!active) return;
+
+        if (storedLetterCategories) {
+          setSelectedLetterCategories(storedLetterCategories);
+        }
+        if (storedModeIndexes && storedModeIndexes.length > 0) {
+          const restoredModes = storedModeIndexes
+            .map(i => LETTER_MODES[i])
+            .filter((m): m is typeof LETTER_MODES[number] => !!m);
+          if (restoredModes.length > 0) setSelectedModes(restoredModes);
+        }
+
+        await Promise.all([
+          loadCategories(storedWordCategories),
+          loadFilterOptions(storedMaxDifficulty, storedTags),
+        ]);
+        setPrefsRestored(true);
+      })();
+
+      return () => {
+        active = false;
+        clearQueue();
+        setPrefsRestored(false);
+      };
     }, [])
   );
 
+  // Fires once prefsRestored flips true, i.e. on the render after every
+  // restored filter has actually committed - so loadSession() (and the
+  // showNextCard/fetchAppliedCards closures it calls) read the restored
+  // values instead of racing ahead of the setState calls above.
+  useEffect(() => {
+    if (prefsRestored) {
+      loadSession();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefsRestored]);
+
   if (loading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator color="#ffffff" size="large" />
-        <Text style={styles.loadingText}>Loading cards...</Text>
+      <View style={[styles.center, { backgroundColor: colors.background }]}>
+        <ActivityIndicator color={colors.text} size="large" />
+        <Text style={[styles.loadingText, { color: colors.textFaint }]}>Loading cards...</Text>
       </View>
     );
   }
 
   if (sessionDone) {
     return (
-      <View style={styles.center}>
-        <Text style={styles.doneText}>セッション完了</Text>
-        <Text style={styles.doneSubText}>Session complete!</Text>
-        <TouchableOpacity style={styles.restartButton} onPress={loadSession}>
-          <Text style={styles.restartText}>Start Again</Text>
+      <View style={[styles.center, { backgroundColor: colors.background }]}>
+        <Text style={[styles.doneText, { color: colors.text }]}>セッション完了</Text>
+        <Text style={[styles.doneSubText, { color: colors.textMuted }]}>Session complete!</Text>
+        <TouchableOpacity style={[styles.restartButton, { backgroundColor: colors.accent }]} onPress={loadSession}>
+          <Text style={[styles.restartText, { color: colors.accentText }]}>Start Again</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
-  if (!currentCard) return null;
+  // currentCard is legitimately null whenever noResults or invalidTag is
+  // shown instead of a real card - only bail out to a blank screen if none
+  // of the three states account for the missing card (e.g. still between
+  // renders).
+  if (!currentCard && !noResults && !invalidTag) return null;
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.progress}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <Text style={[styles.progress, { color: colors.textFaint }]}>
         {getActiveCards().length} cards remaining
       </Text>
 
       <View style={styles.columns}>
 
         {/* Left panel - category toggles */}
-        <View style={styles.leftPanel}>
-          <Text style={styles.panelTitle}>Categories</Text>
+        <View style={[styles.leftPanel, { backgroundColor: colors.surfaceAlt, borderRightColor: colors.border }]}>
+          <Text style={[styles.panelTitle, { color: colors.textFaint }]}>Categories</Text>
           <ScrollView style={styles.categoryList}>
 
             {/* Word categories */}
-            {categories.map(cat => (
-              <TouchableOpacity
-                key={cat}
-                style={[
-                  styles.categoryChip,
-                  selectedCategories.includes(cat) && styles.categoryChipActive,
-                ]}
-                onPress={() => handleCategoryToggle(cat)}
-              >
-                <Text style={[
-                  styles.categoryText,
-                  selectedCategories.includes(cat) && styles.categoryTextActive,
-                ]}>
-                  {cat}
-                </Text>
-              </TouchableOpacity>
-            ))}
+            {categories.map(cat => {
+              const active = selectedCategories.includes(cat);
+              return (
+                <TouchableOpacity
+                  key={cat}
+                  style={[
+                    styles.categoryChip,
+                    { backgroundColor: colors.surface, borderColor: colors.border },
+                    active && { backgroundColor: colors.accent, borderColor: colors.accent },
+                  ]}
+                  onPress={() => handleCategoryToggle(cat)}
+                >
+                  <Text style={[
+                    styles.categoryText,
+                    { color: colors.textFaint },
+                    active && { color: colors.accentText, fontWeight: 'bold' },
+                  ]}>
+                    {cat}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
 
             {/* Letters section */}
-            <Text style={[styles.panelTitle, { marginTop: 16 }]}>Letters</Text>
-            {LETTER_CATEGORIES.map(cat => (
-              <TouchableOpacity
-                key={cat}
-                style={[
-                  styles.categoryChip,
-                  selectedLetterCategories.includes(cat) && styles.categoryChipActive,
-                ]}
-                onPress={() => setSelectedLetterCategories(prev =>
-                  prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]
-                )}
-              >
-                <Text style={[
-                  styles.categoryText,
-                  selectedLetterCategories.includes(cat) && styles.categoryTextActive,
-                ]}>
-                  {cat}
-                </Text>
-              </TouchableOpacity>
-            ))}
+            <Text style={[styles.panelTitle, { color: colors.textFaint, marginTop: 16 }]}>Letters</Text>
+            {LETTER_CATEGORIES.map(cat => {
+              const active = selectedLetterCategories.includes(cat);
+              return (
+                <TouchableOpacity
+                  key={cat}
+                  style={[
+                    styles.categoryChip,
+                    { backgroundColor: colors.surface, borderColor: colors.border },
+                    active && { backgroundColor: colors.accent, borderColor: colors.accent },
+                  ]}
+                  onPress={() => handleLetterCategoryToggle(cat)}
+                >
+                  <Text style={[
+                    styles.categoryText,
+                    { color: colors.textFaint },
+                    active && { color: colors.accentText, fontWeight: 'bold' },
+                  ]}>
+                    {cat}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
 
             {/* Mode selection - only show if letters selected */}
             {selectedLetterCategories.length > 0 && (
               <>
-                <Text style={[styles.panelTitle, { marginTop: 16 }]}>Mode</Text>
-                {LETTER_MODES.map((mode, index) => (
-                  <TouchableOpacity
-                    key={index}
-                    style={[
-                      styles.categoryChip,
-                      selectedModes.includes(mode) && styles.categoryChipActive,
-                    ]}
-                    onPress={() => setSelectedModes(prev =>
-                      prev.includes(mode)
-                        ? prev.filter(m => m !== mode)
-                        : [...prev, mode]
-                    )}
-                  >
-                    <Text style={[
-                      styles.categoryText,
-                      selectedModes.includes(mode) && styles.categoryTextActive,
-                    ]}>
-                      {mode.question} → {mode.answer}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+                <Text style={[styles.panelTitle, { color: colors.textFaint, marginTop: 16 }]}>Mode</Text>
+                {LETTER_MODES.map((mode, index) => {
+                  const active = selectedModes.includes(mode);
+                  return (
+                    <TouchableOpacity
+                      key={index}
+                      style={[
+                        styles.categoryChip,
+                        { backgroundColor: colors.surface, borderColor: colors.border },
+                        active && { backgroundColor: colors.accent, borderColor: colors.accent },
+                      ]}
+                      onPress={() => handleModeToggle(mode)}
+                    >
+                      <Text style={[
+                        styles.categoryText,
+                        { color: colors.textFaint },
+                        active && { color: colors.accentText, fontWeight: 'bold' },
+                      ]}>
+                        {mode.question} → {mode.answer}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </>
             )}
 
           </ScrollView>
 
-          <TouchableOpacity style={styles.applyButton} onPress={loadSession}>
-            <Text style={styles.applyText}>Apply</Text>
+          <TouchableOpacity style={[styles.applyButton, { backgroundColor: colors.accent }]} onPress={loadSession}>
+            <Text style={[styles.applyText, { color: colors.accentText }]}>Apply</Text>
           </TouchableOpacity>
         </View>
 
         {/* Center - card box with mute button */}
         <View style={styles.centerPanel}>
-          <View style={styles.cardBox}>
+          <View style={[styles.cardBox, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
             <View style={styles.cardBoxHeader}>
+              <View style={styles.announceToggleRow}>
+                <Text style={[styles.announceLabel, { color: announceMode === 'correct' ? colors.text : colors.textFaint }]}>
+                  Announce correct
+                </Text>
+                <Switch
+                  value={announceMode === 'celebration'}
+                  onValueChange={(value) => setAnnounceMode(value ? 'celebration' : 'correct')}
+                  trackColor={{ false: colors.border, true: colors.accent }}
+                  thumbColor={colors.surface}
+                />
+                <Text style={[styles.announceLabel, { color: announceMode === 'celebration' ? colors.text : colors.textFaint }]}>
+                  Announce Celebration
+                </Text>
+              </View>
               <TouchableOpacity
-                style={styles.muteButton}
-                onPress={() => setMuted(m => !m)}
+                style={[styles.muteButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                onPress={() => setMuted(!muted)}
               >
                 <Text style={styles.muteText}>{muted ? '🔇' : '🔊'}</Text>
               </TouchableOpacity>
             </View>
-            <FlashCardComponent
-              card={currentCard}
-              choices={choices}
-              onCorrect={handleCorrect}
-              onKnow={() => {}}
-              onNoIdea={() => {}}
-              muted={muted}
-            />
+            {invalidTag ? (
+              <View style={styles.noResultsBox}>
+                <Text style={[styles.noResultsText, { color: colors.danger }]}>Tag error</Text>
+                <Text style={[styles.noResultsHint, { color: colors.textFaint }]}>
+                  Tag: "{invalidTag}" doesn't exist
+                </Text>
+              </View>
+            ) : noResults || !currentCard ? (
+              <View style={styles.noResultsBox}>
+                <Text style={[styles.noResultsText, { color: colors.text }]}>None available</Text>
+                <Text style={[styles.noResultsHint, { color: colors.textFaint }]}>
+                  No cards match the current filters - try widening categories, difficulty, or tags.
+                </Text>
+              </View>
+            ) : (
+              <FlashCardComponent
+                card={currentCard}
+                choices={choices}
+                onCorrect={handleCorrect}
+                muted={muted}
+                announceMode={announceMode}
+              />
+            )}
           </View>
         </View>
 
-        {/* Right panel - empty for now */}
-        <View style={styles.rightPanel} />
+        {/* Right panel - difficulty cap + tag filter */}
+        <View style={[styles.rightPanel, { backgroundColor: colors.surfaceAlt, borderLeftColor: colors.border }]}>
+          <Text style={[styles.panelTitle, { color: colors.textFaint }]}>Difficulty</Text>
+          <View style={styles.stepperRow}>
+            <TouchableOpacity
+              style={[styles.stepperButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              onPress={() => handleDifficultyChange(-1)}
+              disabled={maxDifficulty <= 1}
+            >
+              <Text style={[styles.stepperButtonText, { color: colors.text }]}>−</Text>
+            </TouchableOpacity>
+            <Text style={[styles.stepperValue, { color: colors.text }]}>{maxDifficulty}</Text>
+            <TouchableOpacity
+              style={[styles.stepperButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              onPress={() => handleDifficultyChange(1)}
+              disabled={maxDifficulty >= difficultyCeiling}
+            >
+              <Text style={[styles.stepperButtonText, { color: colors.text }]}>+</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={[styles.stepperHint, { color: colors.textFaint }]}>max out of {difficultyCeiling}</Text>
+
+          <Text style={[styles.panelTitle, { color: colors.textFaint, marginTop: 16 }]}>Tags</Text>
+          <View style={styles.tagInputRow}>
+            <TextInput
+              style={[styles.tagInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.text }]}
+              placeholder="add a tag..."
+              placeholderTextColor={colors.textFaint}
+              value={tagInput}
+              onChangeText={setTagInput}
+              onSubmitEditing={handleAddTag}
+              returnKeyType="done"
+            />
+            <TouchableOpacity
+              style={[styles.tagAddButton, { backgroundColor: colors.accent }]}
+              onPress={handleAddTag}
+            >
+              <Text style={[styles.tagAddButtonText, { color: colors.accentText }]}>+</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.categoryList}>
+            {selectedTags.length === 0 && tagSuggestions.length > 0 && (
+              <>
+                <Text style={[styles.suggestionsLabel, { color: colors.textFaint }]}>Suggestions</Text>
+                <View style={styles.tagBubbleWrap}>
+                  {tagSuggestions.map(tag => (
+                    <TouchableOpacity
+                      key={tag}
+                      style={[styles.tagBubble, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                      onPress={() => addTag(tag)}
+                    >
+                      <Text style={[styles.tagBubbleText, { color: colors.textFaint }]}>{tag} +</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            )}
+            <View style={styles.tagBubbleWrap}>
+              {selectedTags.map(tag => (
+                <TouchableOpacity
+                  key={tag}
+                  style={[styles.tagBubble, { backgroundColor: colors.accent, borderColor: colors.accent }]}
+                  onPress={() => handleRemoveTag(tag)}
+                >
+                  <Text style={[styles.tagBubbleText, { color: colors.accentText }]}>{tag} ✕</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </ScrollView>
+
+          <TouchableOpacity style={[styles.applyButton, { backgroundColor: colors.accent }]} onPress={loadSession}>
+            <Text style={[styles.applyText, { color: colors.accentText }]}>Apply</Text>
+          </TouchableOpacity>
+        </View>
 
       </View>
     </View>
@@ -314,12 +719,10 @@ export default function OfflineScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0a0a0a',
     paddingTop: 8,
   },
   center: {
     flex: 1,
-    backgroundColor: '#0a0a0a',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 16,
@@ -330,9 +733,7 @@ const styles = StyleSheet.create({
   },
   leftPanel: {
     width: 200,
-    backgroundColor: '#111111',
     borderRightWidth: 1,
-    borderRightColor: '#1a1a1a',
     padding: 16,
     justifyContent: 'space-between',
   },
@@ -349,37 +750,133 @@ const styles = StyleSheet.create({
   cardBox: {
     width: '100%',
     maxWidth: 540,
-    backgroundColor: '#111111',
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#1a1a1a',
     padding: 16,
     flex: 1,
     maxHeight: 720,
   },
   cardBoxHeader: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 8,
+  },
+  announceToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 1,
+  },
+  announceLabel: {
+    fontSize: 11,
+    fontWeight: 'bold',
   },
   muteButton: {
     padding: 8,
     borderRadius: 6,
-    backgroundColor: '#1a1a1a',
     borderWidth: 1,
-    borderColor: '#2a2a2a',
   },
   muteText: {
     fontSize: 16,
   },
+  noResultsBox: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+    gap: 12,
+  },
+  noResultsText: {
+    fontSize: 32,
+    fontWeight: 'bold',
+  },
+  noResultsHint: {
+    fontSize: 13,
+    textAlign: 'center',
+    maxWidth: 320,
+  },
   rightPanel: {
     width: 200,
-    backgroundColor: '#111111',
     borderLeftWidth: 1,
-    borderLeftColor: '#1a1a1a',
+    padding: 16,
+    justifyContent: 'space-between',
+  },
+  stepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  stepperButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepperButtonText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  stepperValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    minWidth: 24,
+    textAlign: 'center',
+  },
+  stepperHint: {
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: 6,
+  },
+  tagInputRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 10,
+  },
+  tagInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+  },
+  tagAddButton: {
+    width: 34,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tagAddButtonText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  suggestionsLabel: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  tagBubbleWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  tagBubble: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  tagBubbleText: {
+    fontSize: 12,
+    fontWeight: 'bold',
   },
   panelTitle: {
-    color: '#555555',
     fontSize: 11,
     fontWeight: 'bold',
     letterSpacing: 2,
@@ -391,62 +888,43 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     marginBottom: 6,
     borderWidth: 1,
-    borderColor: '#2a2a2a',
-    backgroundColor: '#1a1a1a',
-  },
-  categoryChipActive: {
-    backgroundColor: '#ffffff',
-    borderColor: '#ffffff',
   },
   categoryText: {
-    color: '#555555',
     fontSize: 13,
     textTransform: 'capitalize',
   },
-  categoryTextActive: {
-    color: '#0a0a0a',
-    fontWeight: 'bold',
-  },
   applyButton: {
-    backgroundColor: '#ffffff',
     padding: 12,
     borderRadius: 8,
     alignItems: 'center',
     marginTop: 12,
   },
   applyText: {
-    color: '#0a0a0a',
     fontWeight: 'bold',
     fontSize: 14,
   },
   loadingText: {
-    color: '#555555',
     fontSize: 14,
     marginTop: 12,
   },
   doneText: {
-    color: '#ffffff',
     fontSize: 36,
     fontWeight: 'bold',
   },
   doneSubText: {
-    color: '#888888',
     fontSize: 18,
   },
   restartButton: {
-    backgroundColor: '#ffffff',
     paddingHorizontal: 32,
     paddingVertical: 14,
     borderRadius: 8,
     marginTop: 16,
   },
   restartText: {
-    color: '#0a0a0a',
     fontWeight: 'bold',
     fontSize: 16,
   },
   progress: {
-    color: '#444444',
     fontSize: 12,
     textAlign: 'center',
     marginBottom: 8,
