@@ -13,3 +13,11 @@ export interface FlashCard extends DataCard {
   reading: string;
   nativeLanguage: string;
 }
+export interface LetterCard extends DataCard {
+  cardType: 'letter';
+  hiragana: string;
+  katakana: string;
+  romaji: string;
+  questionScript: 'hiragana' | 'katakana' | 'romaji';
+  answerScript: 'hiragana' | 'katakana' | 'romaji';
+}

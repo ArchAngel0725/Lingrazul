@@ -1,11 +1,12 @@
 // ALark-Claude_Review@MEGADATA
 // FlashCardComponent.tsx - Renders a flashcard with vanishing multiple choice options
+// Supports both FlashCard (words) and LetterCard (hiragana/katakana/romaji)
 // Wrong answers disappear on tap, correct answer advances to next card
 
 import { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { FlashCard } from '../lib/cards';
 import * as Speech from 'expo-speech';
+import { FlashCard, LetterCard } from '../lib/cards';
 
 const CELEBRATION_PHRASES = [
   'すごい！', 'すごいね！', 'やるじゃん！', 'さすが！', 'かっこいい！',
@@ -17,14 +18,31 @@ const CELEBRATION_PHRASES = [
 ];
 
 interface Props {
-  card: FlashCard;
+  card: FlashCard | LetterCard;
   choices: string[];
   onCorrect: () => void;
   onKnow: () => void;
   onNoIdea: () => void;
+  muted: boolean;
 }
 
-export default function FlashCardComponent({ card, choices, onCorrect, onKnow, onNoIdea }: Props) {
+// Gets the question text based on card type
+const getQuestion = (card: FlashCard | LetterCard): string => {
+  if (card.cardType === 'letter') {
+    return card[card.questionScript as keyof LetterCard] as string;
+  }
+  return (card as FlashCard).learningLanguage;
+};
+
+// Gets the correct answer text based on card type
+const getAnswer = (card: FlashCard | LetterCard): string => {
+  if (card.cardType === 'letter') {
+    return card[card.answerScript as keyof LetterCard] as string;
+  }
+  return (card as FlashCard).nativeLanguage;
+};
+
+export default function FlashCardComponent({ card, choices, onCorrect, onKnow, onNoIdea, muted }: Props) {
   const [visibleChoices, setVisibleChoices] = useState<string[]>(choices);
   const [wrongCount, setWrongCount] = useState(0);
 
@@ -35,6 +53,7 @@ export default function FlashCardComponent({ card, choices, onCorrect, onKnow, o
 
   // wrongCount penalty lowers pitch/rate the more wrong answers were given
   const speakCelebration = (count: number) => {
+    if (muted) return;
     const phrase = CELEBRATION_PHRASES[Math.floor(Math.random() * CELEBRATION_PHRASES.length)];
     const penalty = count * 0.05;
     const pitch = Math.max(0.5, (0.9 + Math.random() * 0.1) - penalty);
@@ -43,7 +62,7 @@ export default function FlashCardComponent({ card, choices, onCorrect, onKnow, o
   };
 
   const handleChoice = (choice: string) => {
-    if (choice === card.nativeLanguage) {
+    if (choice === getAnswer(card)) {
       speakCelebration(wrongCount);
       setWrongCount(0);
       onCorrect();
@@ -56,8 +75,11 @@ export default function FlashCardComponent({ card, choices, onCorrect, onKnow, o
   return (
     <View style={styles.container}>
       <View style={styles.card}>
-        <TouchableOpacity onPress={() => Speech.speak(card.learningLanguage, { language: 'ja' })}>
-          <Text style={styles.mainText}>{card.learningLanguage}</Text>
+        {/* Tap the question to hear it spoken */}
+        <TouchableOpacity onPress={() => {
+          if (!muted) Speech.speak(getQuestion(card), { language: 'ja' });
+        }}>
+          <Text style={styles.mainText}>{getQuestion(card)}</Text>
         </TouchableOpacity>
         <Text style={styles.category}>{card.category}</Text>
       </View>
@@ -89,7 +111,6 @@ export default function FlashCardComponent({ card, choices, onCorrect, onKnow, o
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0a0a0a',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
