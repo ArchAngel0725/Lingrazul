@@ -24,6 +24,7 @@ export default function TabLayout() {
       <Tabs.Screen name="learn" options={{ title: 'Basics' }} />
       <Tabs.Screen name="community" options={{ title: 'Community' }} />
       <Tabs.Screen name="offline" options={{ title: 'Flash Cards' }} />
+      <Tabs.Screen name="report" options={{ title: 'Report Bug' }} />
       <Tabs.Screen name="settings" options={{ title: 'Settings' }} />
     </Tabs>
   );
