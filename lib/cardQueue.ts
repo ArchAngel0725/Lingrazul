@@ -4,6 +4,7 @@
 // Word cards pull decoys from wordPool, letter cards pull from letterPool
 
 import { FlashCard, LetterCard } from './cards';
+import { shuffle } from './random';
 
 // Union type for any card that can appear in the queue
 type AnyCard = FlashCard | LetterCard;
@@ -156,7 +157,7 @@ export function clearQueue(): void {
 export function getDecoys(correctAnswer: string, cardType: string, excludeId: string): string[] {
   const pool = cardType === 'letter' ? letterPool : wordPool;
   const filtered = pool.filter(entry => entry.text !== correctAnswer && entry.id !== excludeId);
-  const shuffled = filtered.sort(() => Math.random() - 0.5);
+  const shuffled = shuffle(filtered);
 
   // Belt-and-suspenders: also dedupe by text. Some kana rows legitimately
   // share a reading (e.g. じ and ぢ both romanize to "ji"), which would

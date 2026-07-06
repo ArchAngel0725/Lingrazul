@@ -2,7 +2,7 @@
 // index.tsx - Home screen. Static Updates/Upcoming content for now - there's
 // no announcements/roadmap table in Supabase, so this is hand-maintained
 // and should be updated as things ship or slip. Reflects real project state
-// as of 2026-07-05 (see AGENTS.md).
+// as of 2026-07-06 (see AGENTS.md).
 
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { usePreferences } from '../../lib/preferences';
@@ -13,6 +13,8 @@ interface Entry {
 }
 
 const UPDATES: Entry[] = [
+  { title: 'Basics lessons', body: 'The Basics tab now has real lesson content instead of a placeholder. Hiragana and Katakana primers are up first, with more lessons planned in textbook order.' },
+  { title: 'Real per-user progress tracking', body: 'Letters, words, and kanji now each track their own accuracy per account, replacing an older table that had stopped working correctly. The Stats page reads straight from this.' },
   { title: 'Fairer flashcard shuffling', body: 'Selecting several categories now pulls an even mix from all of them, instead of one or two categories dominating every session.' },
   { title: 'Rebuilt content database', body: 'Letters, words, and kanji now live in a proper shared structure instead of one-off tables per language. Kanji readings and meanings are tracked separately for the first time, setting up richer kanji content and additional languages down the road.' },
   { title: 'Settings & theming', body: 'Light/Dark/System theme, account status, and flashcard filter reset now live under Settings.' },
@@ -21,9 +23,8 @@ const UPDATES: Entry[] = [
 ];
 
 const UPCOMING: Entry[] = [
-  { title: 'Stats that actually save', body: 'Category-by-category accuracy is built, but nothing writes to user_progress yet - flashcard answers need to be persisted next.' },
-  { title: 'Community lessons', body: 'Layout is in place for browsing and forums. Claude-assisted lesson creation is the next big piece.' },
-  { title: 'Adaptive difficulty', body: 'The "Too hard" / "Too easy" buttons on flashcards are still no-ops - they will drive difficulty weighting once progress is tracked.' },
+  { title: 'Adaptive study modes', body: 'With per-item accuracy now tracked, the next step is new ways to pick which cards come up - starting with a mode that leans on whatever you’re scoring lowest on, instead of pure random.' },
+  { title: 'Messaging, forums & community lessons', body: 'A Discord/Facebook-style way to message other users, post in language forums, and eventually author your own lessons is being scoped out. On hold for now - it needs its own foundation (user profiles, moderation) before work starts.' },
   { title: 'Audio & video lessons', body: 'Whisper-based transcription and native audio playback are planned but not started.' },
 ];
 

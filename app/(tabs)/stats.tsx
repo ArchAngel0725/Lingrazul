@@ -1,8 +1,9 @@
 // ALark-Claude_Review@MEGADATA
 // stats.tsx - Flashcards panel: overall accuracy summary plus a collapsible
 // "By Category" breakdown covering every category on the Flash Cards tab
-// (word + letter), pulled from user_progress. See lib/stats.ts for the
-// aggregation logic and the assumptions it's making about the live schema.
+// (word + letter), pulled from word_progress/letter_progress/kanji_progress.
+// See lib/stats.ts for the aggregation logic and the assumptions it's
+// making about the live schema.
 // Structured as one clearly-labeled panel so future stat sources (e.g.
 // community lessons) can be added as their own panels later.
 

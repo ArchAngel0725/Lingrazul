@@ -1,32 +1,26 @@
-// stats.ts - Aggregates user_progress into overall + per-category accuracy
-// for the Stats screen's Flashcards panel.
+// stats.ts - Aggregates the per-content-type progress tables
+// (letter_progress/word_progress/kanji_progress) into overall +
+// per-category accuracy for the Stats screen's Flashcards panel.
 //
 // Every category that exists on the Flash Cards tab is always included in
 // the result, even ones the user hasn't touched yet (shown as 0%) - the
 // category universe comes from the same live v2 `categories` fetch
 // offline.tsx uses (see categories.ts).
 //
-// IMPORTANT ASSUMPTION: the live user_progress table has no content_type
-// column, so a row's item_id could in principle belong to the v2 `words`,
-// `letters`, or `kanji` table. Since all three use gen_random_uuid()
-// primary keys, a real collision between id spaces is practically
-// impossible - so this looks a row's item_id up against all three and
-// uses whichever one matches. If a content_type column gets added later,
-// swap this for a direct filter.
+// This is simpler than the old version, which had to cross-reference an
+// opaque user_progress.item_id against both word_descriptions AND
+// letters_japanese since there was no way to know which table it
+// belonged to. Progress is now split into three real tables (see
+// v2_progress_schema.sql), so a row's content type is just "which table
+// did this come from" - no guessing, no ambiguity.
 //
-// KNOWN DATA-CONTINUITY GAP: item_id values written before the switch to
-// v2 point at the old letters_japanese/word_descriptions ids, which no
-// longer exist in words/letters/kanji. Those old progress rows just won't
-// match anything here anymore (silently skipped below, same as any
-// item_id for content that's been removed) - existing users' historical
-// accuracy/exposure counts effectively reset once this ships. There's no
-// way to carry that forward automatically since the old and new ids are
-// unrelated values.
+// kanji rows count as contentType 'letter' with category 'kanji', matching
+// the pseudo-category the Flash Cards UI already treats it as
+// (categories.ts).
 //
-// ALSO ASSUMED: user_progress.accuracy is stored as a 0-1 ratio (matching
-// how the original construct plan described it), not a 0-100 percentage.
-// If it turns out to already be 0-100 in the live data, drop the *100
-// below.
+// ASSUMPTION: accuracy is stored as a 0-1 ratio (it's a generated column,
+// correct_count / exposures, see v2_progress_schema.sql), converted to a
+// 0-100 percentage below.
 
 import { supabase } from './supabase';
 import { fetchWordCategoryKeys, fetchLetterCategoryKeys } from './categories';
@@ -47,77 +41,75 @@ export interface StatsSummary {
   categories: CategoryStat[];
 }
 
-interface ProgressRow {
-  item_id: string;
-  exposures: number | null;
-  accuracy: number | null;
+interface Bucket {
+  contentType: ContentType;
+  category: string;
+  exposures: number;
+  weightedAccuracy: number;
+}
+
+function addToBucket(
+  buckets: Map<string, Bucket>,
+  contentType: ContentType,
+  category: string,
+  exposures: number,
+  accuracy: number
+) {
+  const key = `${contentType}:${category}`;
+  const bucket = buckets.get(key) ?? { contentType, category, exposures: 0, weightedAccuracy: 0 };
+  bucket.exposures += exposures;
+  bucket.weightedAccuracy += exposures * accuracy;
+  buckets.set(key, bucket);
 }
 
 export async function fetchStatsSummary(userId: string): Promise<StatsSummary> {
-  const [wordCategories, letterCategories, { data: progress }] = await Promise.all([
+  const [wordCategories, letterCategories] = await Promise.all([
     fetchWordCategoryKeys(),
     fetchLetterCategoryKeys(),
-    supabase.from('user_progress').select('item_id, exposures, accuracy').eq('user_id', userId),
   ]);
 
   // Full category universe - every category that exists on the Flash Cards
   // tab, regardless of whether this user has any data for it yet.
-
-  const buckets = new Map<string, { contentType: ContentType; category: string; exposures: number; weightedAccuracy: number }>();
+  const buckets = new Map<string, Bucket>();
   wordCategories.forEach(category => buckets.set(`word:${category}`, { contentType: 'word', category, exposures: 0, weightedAccuracy: 0 }));
   letterCategories.forEach(category => buckets.set(`letter:${category}`, { contentType: 'letter', category, exposures: 0, weightedAccuracy: 0 }));
 
-  const rows = (progress ?? []) as ProgressRow[];
+  const [{ data: wordRows }, { data: letterRows }, { data: kanjiRows }] = await Promise.all([
+    supabase.from('word_progress').select('exposures, accuracy, words(categories(key))').eq('user_id', userId),
+    supabase.from('letter_progress').select('exposures, accuracy, letters(categories(key))').eq('user_id', userId),
+    supabase.from('kanji_progress').select('exposures, accuracy').eq('user_id', userId),
+  ]);
+
   let totalExposures = 0;
   let totalWeightedAccuracy = 0;
   let itemsTracked = 0;
 
-  if (rows.length > 0) {
-    const itemIds = rows.map(r => r.item_id);
+  (wordRows ?? []).forEach((r: any) => {
+    const exposures = r.exposures ?? 0;
+    const accuracy = r.accuracy ?? 0;
+    itemsTracked += 1;
+    totalExposures += exposures;
+    totalWeightedAccuracy += exposures * accuracy;
+    addToBucket(buckets, 'word', r.words?.categories?.key ?? '', exposures, accuracy);
+  });
 
-    // kanji is its own table in v2 (see AGENTS.md) - it counts as
-    // contentType 'letter' with category 'kanji' here, matching the
-    // pseudo-category the Flash Cards UI already treats it as
-    // (categories.ts).
-    const [{ data: wordRows }, { data: letterRows }, { data: kanjiRows }] = await Promise.all([
-      supabase.from('words').select('id, categories(key)').in('id', itemIds),
-      supabase.from('letters').select('id, categories(key)').in('id', itemIds),
-      supabase.from('kanji').select('id').in('id', itemIds),
-    ]);
+  (letterRows ?? []).forEach((r: any) => {
+    const exposures = r.exposures ?? 0;
+    const accuracy = r.accuracy ?? 0;
+    itemsTracked += 1;
+    totalExposures += exposures;
+    totalWeightedAccuracy += exposures * accuracy;
+    addToBucket(buckets, 'letter', r.letters?.categories?.key ?? '', exposures, accuracy);
+  });
 
-    const categoryById = new Map<string, { category: string; contentType: ContentType }>();
-    (wordRows ?? []).forEach((r: any) =>
-      categoryById.set(r.id, { category: r.categories?.key ?? '', contentType: 'word' })
-    );
-    (letterRows ?? []).forEach((r: any) =>
-      categoryById.set(r.id, { category: r.categories?.key ?? '', contentType: 'letter' })
-    );
-    (kanjiRows ?? []).forEach((r: any) =>
-      categoryById.set(r.id, { category: 'kanji', contentType: 'letter' })
-    );
-
-    for (const row of rows) {
-      const meta = categoryById.get(row.item_id);
-      if (!meta) continue; // progress row for an item that no longer exists - skip
-
-      const exposures = row.exposures ?? 0;
-      const accuracy = row.accuracy ?? 0;
-      itemsTracked += 1;
-      totalExposures += exposures;
-      totalWeightedAccuracy += exposures * accuracy;
-
-      const key = `${meta.contentType}:${meta.category}`;
-      const bucket = buckets.get(key) ?? {
-        contentType: meta.contentType,
-        category: meta.category,
-        exposures: 0,
-        weightedAccuracy: 0,
-      };
-      bucket.exposures += exposures;
-      bucket.weightedAccuracy += exposures * accuracy;
-      buckets.set(key, bucket);
-    }
-  }
+  (kanjiRows ?? []).forEach((r: any) => {
+    const exposures = r.exposures ?? 0;
+    const accuracy = r.accuracy ?? 0;
+    itemsTracked += 1;
+    totalExposures += exposures;
+    totalWeightedAccuracy += exposures * accuracy;
+    addToBucket(buckets, 'letter', 'kanji', exposures, accuracy);
+  });
 
   const categories: CategoryStat[] = Array.from(buckets.values())
     .map(b => ({

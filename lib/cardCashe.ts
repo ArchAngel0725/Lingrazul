@@ -28,28 +28,12 @@
 
 import { supabase } from './supabase';
 import { shuffle } from './random';
+import { getLanguageId } from './languages';
 import { FlashCard, LetterCard, LetterScript } from './cards';
 
 export interface FilterOptions {
   maxDifficulty: number;
   tags: string[];
-}
-
-// languages.id barely ever needs re-fetching (the row never changes during
-// a session) - a tiny module-level cache avoids a round trip on every card
-// pull.
-const languageIdCache = new Map<string, string>();
-async function getLanguageId(code: string): Promise<string | null> {
-  const cached = languageIdCache.get(code);
-  if (cached) return cached;
-
-  const { data, error } = await supabase.from('languages').select('id').eq('code', code).maybeSingle();
-  if (error || !data) {
-    console.error(`Failed to look up language "${code}":`, error);
-    return null;
-  }
-  languageIdCache.set(code, data.id);
-  return data.id;
 }
 
 // Live union of every tag + the highest difficulty value across words,

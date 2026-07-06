@@ -37,7 +37,8 @@ import {
   saveStudyTags,
 } from '../../lib/studyPreferences';
 import { WORD_CATEGORY_FALLBACK, LETTER_CATEGORIES_FALLBACK, fetchWordCategoryKeys, fetchLetterCategoryKeys } from '../../lib/categories';
-import { recordAnswer } from '../../lib/progress';
+import { recordAnswer, ProgressContentType } from '../../lib/progress';
+import { shuffle } from '../../lib/random';
 
 const ALL_CATEGORIES = WORD_CATEGORY_FALLBACK;
 
@@ -172,7 +173,7 @@ export default function OfflineScreen() {
     // A handful of random real tags to show as tappable suggestions when
     // nothing's typed yet - picked once per fetch (not re-randomized on
     // every render) so they don't jump around while the panel is open.
-    const shuffled = [...allTags].sort(() => Math.random() - 0.5);
+    const shuffled = shuffle(allTags);
     setTagSuggestions(shuffled.slice(0, 5));
   };
 
@@ -285,7 +286,7 @@ export default function OfflineScreen() {
       ? await fetchLetterCards(count, selectedModes, selectedLetterCategories, maxDifficulty, selectedTags)
       : [];
 
-    return [...wordCards, ...letterCards].sort(() => Math.random() - 0.5);
+    return shuffle([...wordCards, ...letterCards]);
   };
 
   // --- Load session - fetches word cards, letter cards, and decoy pools ---
@@ -387,21 +388,31 @@ export default function OfflineScreen() {
     // Build choices - 1 correct + 3 decoys shuffled
     const decoys = getDecoys(correctAnswer, next.cardType, next.id);
     const allChoices = [correctAnswer, ...decoys];
-    const shuffled = allChoices.sort(() => Math.random() - 0.5);
+    const shuffled = shuffle(allChoices);
     setChoices(shuffled);
   };
 
   // --- Called when user taps the correct answer ---
   // usedHint is true if the question was tapped to hear it spoken this card -
   // in that case the card still advances normally, but the answer is not
-  // written to user_progress at all (neither helps nor hurts accuracy),
-  // since hearing the reading spoken makes "getting it right" meaningless
-  // as a signal. This is independent of mute state by design.
+  // written to progress at all (neither helps nor hurts accuracy), since
+  // hearing the reading spoken makes "getting it right" meaningless as a
+  // signal. This is independent of mute state by design.
   const handleCorrect = (wasFirstTry: boolean, usedHint: boolean) => {
     if (!currentCard) return;
     markCorrect(currentCard.id);
     if (userId && !usedHint) {
-      recordAnswer(userId, currentCard.id, wasFirstTry);
+      // Word cards always go to word_progress. Letter cards go to
+      // kanji_progress when the row is actually a kanji (see
+      // lib/cardCashe.ts's fetchKanjiRows, which sets hasKanji on kanji-
+      // sourced LetterCards), letter_progress otherwise.
+      const progressType: ProgressContentType =
+        currentCard.cardType === 'flash'
+          ? 'word'
+          : (currentCard as LetterCard).hasKanji
+            ? 'kanji'
+            : 'letter';
+      recordAnswer(userId, progressType, currentCard.language, currentCard.id, wasFirstTry);
     }
     shuffleCurrentToBack();
     if (needsRefill()) {
