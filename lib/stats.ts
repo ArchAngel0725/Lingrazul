@@ -3,30 +3,33 @@
 //
 // Every category that exists on the Flash Cards tab is always included in
 // the result, even ones the user hasn't touched yet (shown as 0%) - the
-// category universe comes from the same two sources offline.tsx uses: word
-// categories fetched live from word_descriptions, letter categories from
-// the shared LETTER_CATEGORIES list.
+// category universe comes from the same live v2 `categories` fetch
+// offline.tsx uses (see categories.ts).
 //
-// IMPORTANT ASSUMPTION: the live user_progress table (as actually created
-// in Supabase) has no content_type column, so a row's item_id could in
-// principle belong to either word_descriptions or letters_japanese. Since
-// both tables use gen_random_uuid() primary keys, a real collision between
-// the two id spaces is practically impossible - so this looks a row's
-// item_id up against both tables and uses whichever one matches. If a
-// content_type column gets added later, swap this for a direct filter.
+// IMPORTANT ASSUMPTION: the live user_progress table has no content_type
+// column, so a row's item_id could in principle belong to the v2 `words`,
+// `letters`, or `kanji` table. Since all three use gen_random_uuid()
+// primary keys, a real collision between id spaces is practically
+// impossible - so this looks a row's item_id up against all three and
+// uses whichever one matches. If a content_type column gets added later,
+// swap this for a direct filter.
+//
+// KNOWN DATA-CONTINUITY GAP: item_id values written before the switch to
+// v2 point at the old letters_japanese/word_descriptions ids, which no
+// longer exist in words/letters/kanji. Those old progress rows just won't
+// match anything here anymore (silently skipped below, same as any
+// item_id for content that's been removed) - existing users' historical
+// accuracy/exposure counts effectively reset once this ships. There's no
+// way to carry that forward automatically since the old and new ids are
+// unrelated values.
 //
 // ALSO ASSUMED: user_progress.accuracy is stored as a 0-1 ratio (matching
 // how the original construct plan described it), not a 0-100 percentage.
 // If it turns out to already be 0-100 in the live data, drop the *100
 // below.
-//
-// Nothing currently writes to user_progress anywhere in the app (see
-// AGENTS.md project-state notes) - so until that's wired up, every
-// category will show 0% for every user. This module only covers the read
-// side.
 
 import { supabase } from './supabase';
-import { LETTER_CATEGORIES } from './categories';
+import { fetchWordCategoryKeys, fetchLetterCategoryKeys } from './categories';
 
 export type ContentType = 'word' | 'letter';
 
@@ -51,15 +54,14 @@ interface ProgressRow {
 }
 
 export async function fetchStatsSummary(userId: string): Promise<StatsSummary> {
-  const [{ data: wordCategoryRows }, { data: progress }] = await Promise.all([
-    supabase.from('word_descriptions').select('category'),
+  const [wordCategories, letterCategories, { data: progress }] = await Promise.all([
+    fetchWordCategoryKeys(),
+    fetchLetterCategoryKeys(),
     supabase.from('user_progress').select('item_id, exposures, accuracy').eq('user_id', userId),
   ]);
 
   // Full category universe - every category that exists on the Flash Cards
   // tab, regardless of whether this user has any data for it yet.
-  const wordCategories = [...new Set((wordCategoryRows ?? []).map((r: any) => r.category as string))];
-  const letterCategories = [...LETTER_CATEGORIES] as string[];
 
   const buckets = new Map<string, { contentType: ContentType; category: string; exposures: number; weightedAccuracy: number }>();
   wordCategories.forEach(category => buckets.set(`word:${category}`, { contentType: 'word', category, exposures: 0, weightedAccuracy: 0 }));
@@ -73,14 +75,26 @@ export async function fetchStatsSummary(userId: string): Promise<StatsSummary> {
   if (rows.length > 0) {
     const itemIds = rows.map(r => r.item_id);
 
-    const [{ data: wordRows }, { data: letterRows }] = await Promise.all([
-      supabase.from('word_descriptions').select('id, category').in('id', itemIds),
-      supabase.from('letters_japanese').select('id, category').in('id', itemIds),
+    // kanji is its own table in v2 (see AGENTS.md) - it counts as
+    // contentType 'letter' with category 'kanji' here, matching the
+    // pseudo-category the Flash Cards UI already treats it as
+    // (categories.ts).
+    const [{ data: wordRows }, { data: letterRows }, { data: kanjiRows }] = await Promise.all([
+      supabase.from('words').select('id, categories(key)').in('id', itemIds),
+      supabase.from('letters').select('id, categories(key)').in('id', itemIds),
+      supabase.from('kanji').select('id').in('id', itemIds),
     ]);
 
     const categoryById = new Map<string, { category: string; contentType: ContentType }>();
-    (wordRows ?? []).forEach((r: any) => categoryById.set(r.id, { category: r.category, contentType: 'word' }));
-    (letterRows ?? []).forEach((r: any) => categoryById.set(r.id, { category: r.category, contentType: 'letter' }));
+    (wordRows ?? []).forEach((r: any) =>
+      categoryById.set(r.id, { category: r.categories?.key ?? '', contentType: 'word' })
+    );
+    (letterRows ?? []).forEach((r: any) =>
+      categoryById.set(r.id, { category: r.categories?.key ?? '', contentType: 'letter' })
+    );
+    (kanjiRows ?? []).forEach((r: any) =>
+      categoryById.set(r.id, { category: 'kanji', contentType: 'letter' })
+    );
 
     for (const row of rows) {
       const meta = categoryById.get(row.item_id);

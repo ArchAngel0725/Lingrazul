@@ -36,7 +36,7 @@ import {
   loadStudyTags,
   saveStudyTags,
 } from '../../lib/studyPreferences';
-import { WORD_CATEGORY_FALLBACK, LETTER_CATEGORIES } from '../../lib/categories';
+import { WORD_CATEGORY_FALLBACK, LETTER_CATEGORIES_FALLBACK, fetchWordCategoryKeys, fetchLetterCategoryKeys } from '../../lib/categories';
 import { recordAnswer } from '../../lib/progress';
 
 const ALL_CATEGORIES = WORD_CATEGORY_FALLBACK;
@@ -78,6 +78,9 @@ export default function OfflineScreen() {
   const [selectedCategories, setSelectedCategories] = useState<string[]>(ALL_CATEGORIES);
   const [categories, setCategories] = useState<string[]>(ALL_CATEGORIES);
   const [selectedLetterCategories, setSelectedLetterCategories] = useState<string[]>([]);
+  // Live-fetched from the v2 categories table (see categories.ts) - starts
+  // as the static fallback for the brief window before that resolves.
+  const [letterCategories, setLetterCategories] = useState<string[]>(LETTER_CATEGORIES_FALLBACK);
   const [selectedModes, setSelectedModes] = useState<typeof LETTER_MODES[number][]>([LETTER_MODES[0]]);
   // Right panel: difficulty cap + tag filter. difficultyCeiling is the
   // highest difficulty value actually present in the data (fetched live,
@@ -131,18 +134,25 @@ export default function OfflineScreen() {
   // word categories on purpose) must be respected as-is, not treated the
   // same as "no preference" and silently reset back to all categories.
   const loadCategories = async (storedCategories: string[] | null) => {
-    const { data } = await supabase
-      .from('word_descriptions')
-      .select('category');
+    const unique = await fetchWordCategoryKeys();
+    setCategories(unique);
+    if (storedCategories === null) {
+      setSelectedCategories(unique);
+    } else {
+      setSelectedCategories(storedCategories.filter(c => unique.includes(c)));
+    }
+  };
 
-    if (data) {
-      const unique = [...new Set(data.map(d => d.category))] as string[];
-      setCategories(unique);
-      if (storedCategories === null) {
-        setSelectedCategories(unique);
-      } else {
-        setSelectedCategories(storedCategories.filter(c => unique.includes(c)));
-      }
+  // --- Same restore-and-filter pattern as loadCategories, for the Letters
+  // panel now that letter categories are live-fetched too instead of a
+  // static list (see categories.ts). null means never set (first run) -
+  // that's the one case that should default to nothing selected, matching
+  // the previous static-list behavior where no letter category started on. ---
+  const loadLetterCategories = async (storedLetterCategories: string[] | null) => {
+    const unique = await fetchLetterCategoryKeys();
+    setLetterCategories(unique);
+    if (storedLetterCategories !== null) {
+      setSelectedLetterCategories(storedLetterCategories.filter(c => unique.includes(c)));
     }
   };
 
@@ -425,9 +435,6 @@ export default function OfflineScreen() {
         ]);
         if (!active) return;
 
-        if (storedLetterCategories) {
-          setSelectedLetterCategories(storedLetterCategories);
-        }
         if (storedModeIndexes && storedModeIndexes.length > 0) {
           const restoredModes = storedModeIndexes
             .map(i => LETTER_MODES[i])
@@ -437,6 +444,7 @@ export default function OfflineScreen() {
 
         await Promise.all([
           loadCategories(storedWordCategories),
+          loadLetterCategories(storedLetterCategories),
           loadFilterOptions(storedMaxDifficulty, storedTags),
         ]);
         setPrefsRestored(true);
@@ -521,7 +529,7 @@ export default function OfflineScreen() {
 
         {/* Letters section */}
         <Text style={[styles.panelTitle, { color: colors.textFaint, marginTop: 16 }]}>Letters</Text>
-        {LETTER_CATEGORIES.map(cat => {
+        {letterCategories.map(cat => {
           const active = selectedLetterCategories.includes(cat);
           return (
             <TouchableOpacity

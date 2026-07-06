@@ -13,6 +13,8 @@ interface Entry {
 }
 
 const UPDATES: Entry[] = [
+  { title: 'Fairer flashcard shuffling', body: 'Selecting several categories now pulls an even mix from all of them, instead of one or two categories dominating every session.' },
+  { title: 'Rebuilt content database', body: 'Letters, words, and kanji now live in a proper shared structure instead of one-off tables per language. Kanji readings and meanings are tracked separately for the first time, setting up richer kanji content and additional languages down the road.' },
   { title: 'Settings & theming', body: 'Light/Dark/System theme, account status, and flashcard filter reset now live under Settings.' },
   { title: 'Flash card fixes', body: 'Refills now respect every applied category (word and letter). Decoys can no longer come from the same row as the correct answer.' },
   { title: 'Particle pronunciation', body: 'は and へ are now spoken as "wa"/"e" when used as grammatical particles, not their base kana reading.' },
