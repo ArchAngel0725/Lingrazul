@@ -16,7 +16,7 @@ import { useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import { supabase } from '../../lib/supabase';
-import { usePreferences } from '../../lib/preferences';
+import { usePreferences, ExerciseInputMode } from '../../lib/preferences';
 import { clearStudyPreferences } from '../../lib/studyPreferences';
 import { ThemeMode } from '../../lib/theme';
 
@@ -26,11 +26,17 @@ const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
   { mode: 'system', label: 'System' },
 ];
 
+const EXERCISE_INPUT_OPTIONS: { mode: ExerciseInputMode; label: string }[] = [
+  { mode: 'tap', label: 'Tap word bank' },
+  { mode: 'type', label: 'Type answer' },
+];
+
 export default function SettingsScreen() {
   const {
     colors, themeMode, setThemeMode,
     customCelebrationEnabled, setCustomCelebrationEnabled,
     customCelebrationSoundUri, customCelebrationSoundName, setCustomCelebrationSound,
+    exerciseInputMode, setExerciseInputMode,
   } = usePreferences();
   const router = useRouter();
   const [email, setEmail] = useState<string | null>(null);
@@ -205,6 +211,42 @@ export default function SettingsScreen() {
         {resetConfirmation ? (
           <Text style={[styles.confirmationText, { color: colors.textMuted }]}>{resetConfirmation}</Text>
         ) : null}
+      </View>
+
+      {/* Practical Lessons */}
+      <Text style={[styles.sectionTitle, { color: colors.textFaint }]}>Practical Lessons</Text>
+      <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <Text style={[styles.rowLabel, { color: colors.text, marginBottom: 10 }]}>
+          Fill-in-the-blank answers
+        </Text>
+        <View style={styles.segmented}>
+          {EXERCISE_INPUT_OPTIONS.map(opt => {
+            const active = exerciseInputMode === opt.mode;
+            return (
+              <TouchableOpacity
+                key={opt.mode}
+                style={[
+                  styles.segment,
+                  { borderColor: colors.border },
+                  active && { backgroundColor: colors.accent, borderColor: colors.accent },
+                ]}
+                onPress={() => setExerciseInputMode(opt.mode)}
+              >
+                <Text style={[
+                  styles.segmentText,
+                  { color: colors.textMuted },
+                  active && { color: colors.accentText, fontWeight: 'bold' },
+                ]}>
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+        <Text style={[styles.rowHint, { color: colors.textFaint }]}>
+          "Tap word bank" fills blanks by tapping a word choice - no keyboard needed. "Type
+          answer" lets you type it yourself, in either kana or romaji.
+        </Text>
       </View>
 
       {/* Account */}

@@ -1,3 +1,4 @@
+import { Text } from 'react-native';
 import { Tabs } from 'expo-router';
 import { usePreferences } from '../../lib/preferences';
 import { useIsNarrow } from '../../lib/responsive';
@@ -5,14 +6,22 @@ import { useIsNarrow } from '../../lib/responsive';
 // shortTitle is used on narrow/phone-width screens - with 7 tabs across
 // the top, the full labels ("Flash Cards", "Report Bug", "Community")
 // don't fit a ~360-430px viewport without wrapping or clipping.
-const TAB_CONFIG: { name: string; title: string; shortTitle: string }[] = [
-  { name: 'index', title: 'Home', shortTitle: 'Home' },
-  { name: 'stats', title: 'Stats', shortTitle: 'Stats' },
-  { name: 'learn', title: 'Basics', shortTitle: 'Basics' },
-  { name: 'community', title: 'Community', shortTitle: 'Comm.' },
-  { name: 'offline', title: 'Flash Cards', shortTitle: 'Cards' },
-  { name: 'report', title: 'Report Bug', shortTitle: 'Report' },
-  { name: 'settings', title: 'Settings', shortTitle: 'Settings' },
+//
+// icon is a plain emoji glyph rather than an icon-font component - this
+// project has no icon library installed (no @expo/vector-icons in
+// package.json/node_modules, and npm installs are flaky in this sandbox -
+// see AGENTS.md's environment quirks), and expo-router's default tab
+// rendering with no tabBarIcon at all was showing a broken-image glyph on
+// mobile web. A native Text emoji renders everywhere (iOS/Android/web)
+// with zero new dependencies.
+const TAB_CONFIG: { name: string; title: string; shortTitle: string; icon: string }[] = [
+  { name: 'index', title: 'Home', shortTitle: 'Home', icon: '🏠' },
+  { name: 'stats', title: 'Stats', shortTitle: 'Stats', icon: '📊' },
+  { name: 'learn', title: 'Basics', shortTitle: 'Basics', icon: '📖' },
+  { name: 'community', title: 'Community', shortTitle: 'Comm.', icon: '💬' },
+  { name: 'offline', title: 'Flash Cards', shortTitle: 'Cards', icon: '🎴' },
+  { name: 'report', title: 'Report Bug', shortTitle: 'Report', icon: '🐞' },
+  { name: 'settings', title: 'Settings', shortTitle: 'Settings', icon: '⚙️' },
 ];
 
 export default function TabLayout() {
@@ -41,7 +50,12 @@ export default function TabLayout() {
         <Tabs.Screen
           key={tab.name}
           name={tab.name}
-          options={{ title: isNarrow ? tab.shortTitle : tab.title }}
+          options={{
+            title: isNarrow ? tab.shortTitle : tab.title,
+            tabBarIcon: ({ color }) => (
+              <Text style={{ fontSize: isNarrow ? 14 : 16, color }}>{tab.icon}</Text>
+            ),
+          }}
         />
       ))}
     </Tabs>

@@ -2,7 +2,7 @@
 // index.tsx - Home screen. Static Updates/Upcoming content for now - there's
 // no announcements/roadmap table in Supabase, so this is hand-maintained
 // and should be updated as things ship or slip. Reflects real project state
-// as of 2026-07-06 (see AGENTS.md).
+// as of 2026-07-07 (see AGENTS.md).
 
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { usePreferences } from '../../lib/preferences';
@@ -13,6 +13,10 @@ interface Entry {
 }
 
 const UPDATES: Entry[] = [
+  { title: 'Practical Lessons', body: 'A second track under Basics, read one step at a time instead of one long page. Every lesson ends in a Test panel you can answer by tapping word choices or typing the answer yourself, in kana or romaji - switchable in Settings. First lesson up: Basic Phrases (everyday greetings).' },
+  { title: 'Pronunciation fix', body: 'Fixed a bug where quizzing on a reading in "romaji" mode could speak the raw English letters instead of the actual Japanese pronunciation.' },
+  { title: 'Theme fix', body: 'Light/Dark/System could get stuck showing the wrong appearance after the app sat idle for a while, or on first load. It now corrects itself automatically instead of needing a trip to Settings.' },
+  { title: 'New look', body: 'New app icon, and the tab bar now has icons instead of a broken image on mobile.' },
   { title: 'Basics lessons', body: 'The Basics tab now has real lesson content instead of a placeholder. Hiragana and Katakana primers are up first, with more lessons planned in textbook order.' },
   { title: 'Real per-user progress tracking', body: 'Letters, words, and kanji now each track their own accuracy per account, replacing an older table that had stopped working correctly. The Stats page reads straight from this.' },
   { title: 'Fairer flashcard shuffling', body: 'Selecting several categories now pulls an even mix from all of them, instead of one or two categories dominating every session.' },

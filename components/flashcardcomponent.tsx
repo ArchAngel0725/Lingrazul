@@ -10,15 +10,15 @@ import { Audio } from 'expo-av';
 import { FlashCard, LetterCard } from '../lib/cards';
 import { usePreferences } from '../lib/preferences';
 import { useIsNarrow } from '../lib/responsive';
+import { getLanguageConfig } from '../lib/languageConfig';
 
-const CELEBRATION_PHRASES = [
-  'すごい！', 'すごいね！', 'やるじゃん！', 'さすが！', 'かっこいい！',
-  'やばい！', 'マジで！', 'うわあ！', 'いいね！', 'よくできました！',
-  'その通り！', '正解！', '合ってる！', 'バッチリ！', '完璧！',
-  'よし！', 'パーフェクト！', 'ナイス！', 'ブラボー！', '天才！',
-  '神！', 'やるね！', 'さすがだね！', 'もちろん！', 'えらい！',
-  'よかった！', '上手！', '頑張ったね！', '素晴らしい！', '最高！',
-];
+// Celebration phrases, particle pronunciation overrides, and TTS locale all
+// now come from the card's own `language` field via getLanguageConfig()
+// (see lib/languageConfig.ts) instead of being hardcoded Japanese
+// constants here - a card already knows which language it belongs to, so
+// this component doesn't need to assume Japanese itself, just look up
+// whatever that card's language says. Behavior is unchanged today since
+// only Japanese is registered.
 
 interface Props {
   card: FlashCard | LetterCard;
@@ -48,18 +48,6 @@ const getQuestion = (card: FlashCard | LetterCard): string => {
   return (card as FlashCard).learningLanguage;
 };
 
-// Some hiragana are pronounced differently when they're doing grammatical
-// work as a particle than when they're just their base kana reading.
-// は as the topic marker is spoken "wa", not its base reading "ha".
-// へ as the direction particle is spoken "e", not its base reading "he".
-// This must only apply to word/particle flashcards - letter-mode cards
-// (cardType 'letter') are specifically teaching the base kana reading and
-// should still say "ha"/"he" respectively.
-const PARTICLE_PRONUNCIATION_OVERRIDES: Record<string, string> = {
-  'は': 'わ', // topic marker, spoken "wa"
-  'へ': 'え', // direction marker, spoken "e"
-};
-
 // Gets the text that should actually be spoken aloud for a card's question.
 // Differs from getQuestion() in two cases:
 // - particle-category word cards, where the written kana and its spoken
@@ -77,9 +65,23 @@ const getSpokenQuestion = (card: FlashCard | LetterCard): string => {
   if (card.cardType === 'letter' && card.questionScript === 'kanji') {
     return card.hiragana;
   }
+  // 'romaji' is an English-letter transliteration, not real Japanese text -
+  // speaking it with the Japanese TTS voice (language: 'ja', below) makes
+  // the engine try to read raw Latin letters instead of the intended
+  // pronunciation, producing garbled/wrong-sounding output. Fall back to
+  // the kana reading instead (hiragana, else katakana for
+  // katakana-only rows like loanwords) whenever the question script is
+  // 'romaji' - this covers both plain kana rows and kanji rows, since a
+  // kanji row can also land on a romaji-question mode (see LETTER_MODES in
+  // offline.tsx; kanji-only compatibility is only enforced for the
+  // 'kanji' script itself, not for 'romaji').
+  if (card.cardType === 'letter' && card.questionScript === 'romaji') {
+    return card.hiragana || card.katakana;
+  }
   const text = getQuestion(card);
   if (card.cardType === 'flash' && (card as FlashCard).category === 'particle') {
-    return PARTICLE_PRONUNCIATION_OVERRIDES[text] ?? text;
+    const overrides = getLanguageConfig(card.language).particlePronunciationOverrides;
+    return overrides[text] ?? text;
   }
   return text;
 };
@@ -105,6 +107,10 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
   // answers don't leak Sound instances - each play unloads the previous one
   // before loading the next.
   const customSoundRef = useRef<Audio.Sound | null>(null);
+  // This card's language quirks (TTS locale, celebration phrases, particle
+  // overrides) - see lib/languageConfig.ts. Looked up fresh per render off
+  // card.language rather than assumed to be Japanese.
+  const langConfig = getLanguageConfig(card.language);
 
   useEffect(() => {
     setVisibleChoices(choices);
@@ -121,11 +127,12 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
   // wrongCount penalty lowers pitch/rate the more wrong answers were given
   const speakCelebration = (count: number) => {
     if (muted) return;
-    const phrase = CELEBRATION_PHRASES[Math.floor(Math.random() * CELEBRATION_PHRASES.length)];
+    const phrases = langConfig.celebrationPhrases;
+    const phrase = phrases[Math.floor(Math.random() * phrases.length)];
     const penalty = count * 0.05;
     const pitch = Math.max(0.5, (0.9 + Math.random() * 0.1) - penalty);
     const rate = Math.max(0.5, (0.9 + Math.random() * 0.1) - penalty);
-    Speech.speak(phrase, { language: 'ja', pitch, rate });
+    Speech.speak(phrase, { language: langConfig.ttsLocale, pitch, rate });
   };
 
   // Speaks the actual reading instead of a celebration phrase - used when
@@ -134,7 +141,7 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
   // so it has no bearing on scoring either way.
   const announceCorrectReading = () => {
     if (muted) return;
-    Speech.speak(getSpokenQuestion(card), { language: 'ja' });
+    Speech.speak(getSpokenQuestion(card), { language: langConfig.ttsLocale });
   };
 
   // Plays the user's chosen celebration sound file instead of a TTS phrase.
@@ -184,7 +191,7 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
             heardHint so the eventual correct answer won't be scored. */}
         <TouchableOpacity onPress={() => {
           setHeardHint(true);
-          Speech.speak(getSpokenQuestion(card), { language: 'ja' });
+          Speech.speak(getSpokenQuestion(card), { language: langConfig.ttsLocale });
         }}>
           <Text style={[isNarrow ? styles.mainTextNarrow : styles.mainText, { color: colors.text }]}>{getQuestion(card)}</Text>
         </TouchableOpacity>

@@ -1,0 +1,26 @@
+-- Lingrazul: fixes Supabase's security advisor warning on
+-- letters_with_translations ("defined with the SECURITY DEFINER
+-- property").
+--
+-- v2_views.sql created this view with a plain `create view` - it never set
+-- SECURITY DEFINER explicitly, but that's the historical Postgres default
+-- behavior for views anyway: a view runs with the privileges of whoever
+-- created it (here, the SQL-editor's `postgres` role, which has BYPASSRLS)
+-- rather than the privileges of whoever queries it. That means anything
+-- querying this view - including the app's anon/authenticated Supabase
+-- client - would silently bypass RLS on the underlying letters/
+-- letter_translations tables instead of being subject to it, which is
+-- exactly the class of bug the security advisor is flagging.
+--
+-- Postgres 15+ (what Supabase runs) lets a view opt into the opposite,
+-- safer behavior - `security_invoker = true` makes the view enforce the
+-- permissions/RLS of the querying role instead of the creator's. Since
+-- this view is read-only, unused by app code today (see AGENTS.md - kept
+-- as an ad hoc query aid), and the underlying tables already have a
+-- blanket "anyone can read" RLS policy anyway, this is a pure safety
+-- tightening with no behavior change for any real query.
+--
+-- Idempotent - ALTER VIEW ... SET is safe to re-run. Run in the Supabase
+-- SQL editor, after v2_views.sql.
+
+alter view letters_with_translations set (security_invoker = true);

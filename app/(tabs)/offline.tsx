@@ -39,30 +39,20 @@ import {
 import { WORD_CATEGORY_FALLBACK, LETTER_CATEGORIES_FALLBACK, fetchWordCategoryKeys, fetchLetterCategoryKeys } from '../../lib/categories';
 import { recordAnswer, ProgressContentType } from '../../lib/progress';
 import { shuffle } from '../../lib/random';
+import { useActiveLanguage } from '../../lib/activeLanguage';
+import { LetterModePair } from '../../lib/languageConfig';
 
 const ALL_CATEGORIES = WORD_CATEGORY_FALLBACK;
 
-const LETTER_MODES = [
-  { question: 'hiragana', answer: 'romaji' },
-  { question: 'katakana', answer: 'romaji' },
-  { question: 'romaji', answer: 'hiragana' },
-  { question: 'romaji', answer: 'katakana' },
-  { question: 'hiragana', answer: 'katakana' },
-  { question: 'katakana', answer: 'hiragana' },
-  // Kanji-only modes - only satisfiable by rows with has_kanji (see
-  // cardCashe.ts's per-row mode filtering). Kept separate from the plain
-  // kana modes above so a kanji-only session can default straight to one
-  // of these instead of the old kana-to-kana modes, which say nothing
-  // about the actual kanji character.
-  { question: 'kanji', answer: 'hiragana' },
-  { question: 'kanji', answer: 'romaji' },
-  { question: 'hiragana', answer: 'kanji' },
-] as const;
-
-const KANJI_DEFAULT_MODE = LETTER_MODES.find(m => m.question === 'kanji' && m.answer === 'hiragana')!;
-
 export default function OfflineScreen() {
   const { colors, muted, setMuted, announceMode, setAnnounceMode } = usePreferences();
+  const { languageCode, languageConfig } = useActiveLanguage();
+  // Sourced from the active language's config (see languageConfig.ts)
+  // instead of a hardcoded Japanese-only constant, so a second language
+  // brings its own valid script pairs without touching this screen.
+  const LETTER_MODES = languageConfig.letterModes;
+  const UNIQUE_FEATURE_KEY = languageConfig.uniqueFeatureCategoryKey;
+  const UNIQUE_FEATURE_DEFAULT_MODE = languageConfig.uniqueFeatureDefaultMode;
   const isNarrow = useIsNarrow();
   const [loading, setLoading] = useState(true);
   const [currentCard, setCurrentCard] = useState<FlashCard | LetterCard | null>(null);
@@ -82,7 +72,7 @@ export default function OfflineScreen() {
   // Live-fetched from the v2 categories table (see categories.ts) - starts
   // as the static fallback for the brief window before that resolves.
   const [letterCategories, setLetterCategories] = useState<string[]>(LETTER_CATEGORIES_FALLBACK);
-  const [selectedModes, setSelectedModes] = useState<typeof LETTER_MODES[number][]>([LETTER_MODES[0]]);
+  const [selectedModes, setSelectedModes] = useState<LetterModePair[]>([LETTER_MODES[0]]);
   // Right panel: difficulty cap + tag filter. difficultyCeiling is the
   // highest difficulty value actually present in the data (fetched live,
   // same reasoning as word categories) - it's the stepper's upper bound and
@@ -135,7 +125,7 @@ export default function OfflineScreen() {
   // word categories on purpose) must be respected as-is, not treated the
   // same as "no preference" and silently reset back to all categories.
   const loadCategories = async (storedCategories: string[] | null) => {
-    const unique = await fetchWordCategoryKeys();
+    const unique = await fetchWordCategoryKeys(languageCode);
     setCategories(unique);
     if (storedCategories === null) {
       setSelectedCategories(unique);
@@ -150,7 +140,7 @@ export default function OfflineScreen() {
   // that's the one case that should default to nothing selected, matching
   // the previous static-list behavior where no letter category started on. ---
   const loadLetterCategories = async (storedLetterCategories: string[] | null) => {
-    const unique = await fetchLetterCategoryKeys();
+    const unique = await fetchLetterCategoryKeys(languageCode);
     setLetterCategories(unique);
     if (storedLetterCategories !== null) {
       setSelectedLetterCategories(storedLetterCategories.filter(c => unique.includes(c)));
@@ -161,7 +151,7 @@ export default function OfflineScreen() {
   // persisted maxDifficulty/tags selection (same null-vs-empty distinction
   // as loadCategories: null means never set, defaults to uncapped/no-filter). ---
   const loadFilterOptions = async (storedMaxDifficulty: number | null, storedTags: string[] | null) => {
-    const { maxDifficulty: ceiling, tags: allTags } = await fetchFilterOptions();
+    const { maxDifficulty: ceiling, tags: allTags } = await fetchFilterOptions(languageCode);
     setDifficultyCeiling(ceiling);
     setAvailableTags(allTags);
     setMaxDifficulty(storedMaxDifficulty === null ? ceiling : Math.min(storedMaxDifficulty, ceiling));
@@ -228,25 +218,30 @@ export default function OfflineScreen() {
 
   // --- Toggle a letter category on/off, persisting the result ---
   //
-  // Turning on 'kanji' is treated as switching into a dedicated kanji
-  // session rather than adding kanji alongside whatever else was selected:
-  // it clears word categories and any other letter categories, and swaps
-  // in a kanji-testing mode. Without this, kanji rows would get mixed into
-  // an otherwise-unrelated word/kana session by default, and the mode list
-  // would still default to kana-only modes that never show the kanji
-  // character at all - which is what produced an empty, crash-inducing
-  // mode selection before (nothing in the old default modes felt relevant
-  // to kanji, so it got manually deselected down to nothing).
+  // Turning on the language's unique-feature category (e.g. 'kanji' for
+  // Japanese - see languageConfig.ts) is treated as switching into a
+  // dedicated session for it rather than adding it alongside whatever else
+  // was selected: it clears word categories and any other letter
+  // categories, and swaps in that feature's default testing mode. Without
+  // this, e.g. kanji rows would get mixed into an otherwise-unrelated
+  // word/kana session by default, and the mode list would still default to
+  // kana-only modes that never show the kanji character at all - which is
+  // what produced an empty, crash-inducing mode selection before (nothing
+  // in the old default modes felt relevant to kanji, so it got manually
+  // deselected down to nothing).
   const handleLetterCategoryToggle = (cat: string) => {
-    if (cat === 'kanji' && !selectedLetterCategories.includes('kanji')) {
-      setSelectedLetterCategories(['kanji']);
-      saveStudyLetterCategories(['kanji']);
+    if (
+      UNIQUE_FEATURE_KEY && UNIQUE_FEATURE_DEFAULT_MODE &&
+      cat === UNIQUE_FEATURE_KEY && !selectedLetterCategories.includes(UNIQUE_FEATURE_KEY)
+    ) {
+      setSelectedLetterCategories([UNIQUE_FEATURE_KEY]);
+      saveStudyLetterCategories([UNIQUE_FEATURE_KEY]);
 
       setSelectedCategories([]);
       saveStudyWordCategories([]);
 
-      setSelectedModes([KANJI_DEFAULT_MODE]);
-      saveStudyModeIndexes([LETTER_MODES.indexOf(KANJI_DEFAULT_MODE)]);
+      setSelectedModes([UNIQUE_FEATURE_DEFAULT_MODE]);
+      saveStudyModeIndexes([LETTER_MODES.indexOf(UNIQUE_FEATURE_DEFAULT_MODE)]);
       return;
     }
 
@@ -258,7 +253,7 @@ export default function OfflineScreen() {
   };
 
   // --- Toggle a letter mode on/off, persisting by index (see studyPreferences.ts) ---
-  const handleModeToggle = (mode: typeof LETTER_MODES[number]) => {
+  const handleModeToggle = (mode: LetterModePair) => {
     setSelectedModes(prev => {
       const next = prev.includes(mode) ? prev.filter(m => m !== mode) : [...prev, mode];
       saveStudyModeIndexes(next.map(m => LETTER_MODES.indexOf(m)));
@@ -279,11 +274,11 @@ export default function OfflineScreen() {
   // silently drop a category the user actually applied.
   const fetchAppliedCards = async (count: number) => {
     const wordCards = selectedCategories.length > 0
-      ? await fetchFlashCards(count, selectedCategories, maxDifficulty, selectedTags)
+      ? await fetchFlashCards(count, selectedCategories, maxDifficulty, selectedTags, languageCode)
       : [];
 
     const letterCards = selectedLetterCategories.length > 0
-      ? await fetchLetterCards(count, selectedModes, selectedLetterCategories, maxDifficulty, selectedTags)
+      ? await fetchLetterCards(count, selectedModes, selectedLetterCategories, maxDifficulty, selectedTags, languageCode)
       : [];
 
     return shuffle([...wordCards, ...letterCards]);
@@ -332,7 +327,7 @@ export default function OfflineScreen() {
     // exclude a decoy that happens to come from the same row as the
     // current card.
     const decoyCards = selectedCategories.length > 0
-      ? await fetchFlashCards(20, selectedCategories, maxDifficulty, selectedTags)
+      ? await fetchFlashCards(20, selectedCategories, maxDifficulty, selectedTags, languageCode)
       : [];
     const decoyWords = decoyCards.map(c => ({ id: c.id, text: c.nativeLanguage }));
 
@@ -340,7 +335,7 @@ export default function OfflineScreen() {
     // matters more here since one row has 3 valid-looking readings
     // (hiragana/katakana/romaji) depending on which mode was rolled.
     const letterDecoyPool = selectedLetterCategories.length > 0
-      ? (await fetchLetterCards(30, selectedModes, selectedLetterCategories, maxDifficulty, selectedTags))
+      ? (await fetchLetterCards(30, selectedModes, selectedLetterCategories, maxDifficulty, selectedTags, languageCode))
           .map(c => ({ id: c.id, text: (c as any)[c.answerScript] as string }))
       : [];
 
@@ -449,7 +444,7 @@ export default function OfflineScreen() {
         if (storedModeIndexes && storedModeIndexes.length > 0) {
           const restoredModes = storedModeIndexes
             .map(i => LETTER_MODES[i])
-            .filter((m): m is typeof LETTER_MODES[number] => !!m);
+            .filter((m): m is LetterModePair => !!m);
           if (restoredModes.length > 0) setSelectedModes(restoredModes);
         }
 

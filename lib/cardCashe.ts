@@ -30,6 +30,7 @@ import { supabase } from './supabase';
 import { shuffle } from './random';
 import { getLanguageId } from './languages';
 import { FlashCard, LetterCard, LetterScript } from './cards';
+import { getLanguageConfig, DEFAULT_LANGUAGE_CODE } from './languageConfig';
 
 export interface FilterOptions {
   maxDifficulty: number;
@@ -40,14 +41,14 @@ export interface FilterOptions {
 // letters, and kanji. There's no fixed enum for either column, so this
 // reads the actual data every time rather than hardcoding a scale that
 // could silently drift out of date as new rows get added.
-export async function fetchFilterOptions(): Promise<FilterOptions> {
-  const jaId = await getLanguageId('ja');
-  if (!jaId) return { maxDifficulty: 1, tags: [] };
+export async function fetchFilterOptions(languageCode: string = DEFAULT_LANGUAGE_CODE): Promise<FilterOptions> {
+  const langId = await getLanguageId(languageCode);
+  if (!langId) return { maxDifficulty: 1, tags: [] };
 
   const [{ data: wordRows }, { data: letterRows }, { data: kanjiRows }] = await Promise.all([
-    supabase.from('words').select('difficulty,tags').eq('language_id', jaId),
-    supabase.from('letters').select('difficulty,tags').eq('language_id', jaId),
-    supabase.from('kanji').select('difficulty,tags').eq('language_id', jaId),
+    supabase.from('words').select('difficulty,tags').eq('language_id', langId),
+    supabase.from('letters').select('difficulty,tags').eq('language_id', langId),
+    supabase.from('kanji').select('difficulty,tags').eq('language_id', langId),
   ]);
 
   const rows = [...(wordRows ?? []), ...(letterRows ?? []), ...(kanjiRows ?? [])];
@@ -70,14 +71,15 @@ export async function fetchFlashCards(
   limit: number = 20,
   categories?: string[],
   maxDifficulty?: number,
-  tags?: string[]
+  tags?: string[],
+  languageCode: string = DEFAULT_LANGUAGE_CODE
 ): Promise<FlashCard[]> {
   const activeCategories = categories && categories.length > 0 ? categories : [];
   if (activeCategories.length === 0) return [];
 
-  const jaId = await getLanguageId('ja');
+  const langId = await getLanguageId(languageCode);
   const enId = await getLanguageId('en');
-  if (!jaId || !enId) return [];
+  if (!langId || !enId) return [];
 
   // Fair per-category share - see file header.
   const perCategory = Math.max(1, Math.ceil(limit / activeCategories.length));
@@ -86,7 +88,7 @@ export async function fetchFlashCards(
     let query = supabase
       .from('words')
       .select('id, text, difficulty, tags, categories!inner(key), word_translations(translation, is_primary, target_language_id)')
-      .eq('language_id', jaId)
+      .eq('language_id', langId)
       .eq('categories.key', catKey);
 
     if (typeof maxDifficulty === 'number') query = query.lte('difficulty', maxDifficulty);
@@ -113,7 +115,7 @@ export async function fetchFlashCards(
       cardType: 'flash',
       difficulty: row.difficulty,
       category: row.categories?.key ?? '',
-      language: 'ja',
+      language: languageCode,
       tags: row.tags ?? [],
       learningLanguage: row.text,
       reading: '',
@@ -153,7 +155,7 @@ interface CombinedLetterRow {
 // theory - but it is a real assumption, not an enforced constraint.
 async function fetchKanaRowsForCategory(
   catKey: string,
-  jaId: string,
+  langId: string,
   enId: string,
   maxDifficulty?: number,
   tags?: string[]
@@ -161,7 +163,7 @@ async function fetchKanaRowsForCategory(
   let query = supabase
     .from('letters')
     .select('id, character, difficulty, tags, letter_types(key), categories!inner(key), letter_translations(transliteration, is_primary, target_language_id)')
-    .eq('language_id', jaId)
+    .eq('language_id', langId)
     .eq('categories.key', catKey);
 
   if (typeof maxDifficulty === 'number') query = query.lte('difficulty', maxDifficulty);
@@ -212,15 +214,16 @@ async function fetchKanaRowsForCategory(
 // (there's no per-level toggle in the UI today, same as before the v2
 // migration) - difficulty/tags filters still narrow it further.
 async function fetchKanjiRows(
-  jaId: string,
+  langId: string,
   enId: string,
+  uniqueFeatureCategoryKey: string,
   maxDifficulty?: number,
   tags?: string[]
 ): Promise<CombinedLetterRow[]> {
   let query = supabase
     .from('kanji')
     .select('id, character, difficulty, tags, kanji_readings(reading, romaji, is_primary), kanji_translations(translation, is_primary, target_language_id)')
-    .eq('language_id', jaId);
+    .eq('language_id', langId);
 
   if (typeof maxDifficulty === 'number') query = query.lte('difficulty', maxDifficulty);
   if (tags && tags.length > 0) query = query.contains('tags', tags);
@@ -247,7 +250,7 @@ async function fetchKanjiRows(
       kanji: row.character,
       hasKanji: true,
       difficulty: row.difficulty,
-      category: 'kanji',
+      category: uniqueFeatureCategoryKey,
       // English meaning isn't surfaced as a quiz script today (no
       // "kanji -> meaning" mode exists in LETTER_MODES) - kept off the
       // tags array so it doesn't get treated as a filterable tag.
@@ -261,33 +264,36 @@ export async function fetchLetterCards(
   modes: { question: LetterScript; answer: LetterScript }[],
   categories?: string[],
   maxDifficulty?: number,
-  tags?: string[]
+  tags?: string[],
+  languageCode: string = DEFAULT_LANGUAGE_CODE
 ): Promise<LetterCard[]> {
   const activeCategories = categories && categories.length > 0 ? categories : [];
   if (activeCategories.length === 0) return [];
 
-  const jaId = await getLanguageId('ja');
+  const langId = await getLanguageId(languageCode);
   const enId = await getLanguageId('en');
-  if (!jaId || !enId) return [];
+  if (!langId || !enId) return [];
 
-  const kanaCategories = activeCategories.filter(c => c !== 'kanji');
-  const wantsKanji = activeCategories.includes('kanji');
-  const numBuckets = kanaCategories.length + (wantsKanji ? 1 : 0);
+  const uniqueFeatureKey = getLanguageConfig(languageCode).uniqueFeatureCategoryKey;
+  const kanaCategories = activeCategories.filter(c => c !== uniqueFeatureKey);
+  const wantsUniqueFeature = uniqueFeatureKey != null && activeCategories.includes(uniqueFeatureKey);
+  const numBuckets = kanaCategories.length + (wantsUniqueFeature ? 1 : 0);
   if (numBuckets === 0) return [];
 
-  // Same fair-share split as fetchFlashCards, treating "kanji" as just
-  // another bucket alongside each kana category.
+  // Same fair-share split as fetchFlashCards, treating the unique feature
+  // (kanji, for Japanese) as just another bucket alongside each kana
+  // category.
   const perBucket = Math.max(1, Math.ceil(limit / numBuckets));
 
   const [kanaPools, kanjiPool] = await Promise.all([
     Promise.all(
       kanaCategories.map(async catKey => {
-        const rows = await fetchKanaRowsForCategory(catKey, jaId, enId, maxDifficulty, tags);
+        const rows = await fetchKanaRowsForCategory(catKey, langId, enId, maxDifficulty, tags);
         return shuffle(rows).slice(0, perBucket);
       })
     ),
-    wantsKanji
-      ? fetchKanjiRows(jaId, enId, maxDifficulty, tags).then(rows => shuffle(rows).slice(0, perBucket))
+    wantsUniqueFeature && uniqueFeatureKey
+      ? fetchKanjiRows(langId, enId, uniqueFeatureKey, maxDifficulty, tags).then(rows => shuffle(rows).slice(0, perBucket))
       : Promise.resolve([]),
   ]);
 
@@ -312,7 +318,7 @@ export async function fetchLetterCards(
         cardType: 'letter' as const,
         difficulty: row.difficulty,
         category: row.category,
-        language: 'ja',
+        language: languageCode,
         tags: row.tags,
         hiragana: row.hiragana,
         katakana: row.katakana,

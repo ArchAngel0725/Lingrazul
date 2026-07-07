@@ -5,7 +5,7 @@
 // reinstall. Promote to a Supabase-backed table later if that's needed.
 
 import { createContext, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
-import { useColorScheme } from 'react-native';
+import { useColorScheme, Appearance, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ThemeMode, ColorScheme, ThemeColors, colorsFor } from './theme';
 
@@ -15,6 +15,7 @@ const ANNOUNCE_MODE_KEY = 'lingrazul:announceMode';
 const CUSTOM_CELEBRATION_ENABLED_KEY = 'lingrazul:customCelebrationEnabled';
 const CUSTOM_CELEBRATION_URI_KEY = 'lingrazul:customCelebrationSoundUri';
 const CUSTOM_CELEBRATION_NAME_KEY = 'lingrazul:customCelebrationSoundName';
+const EXERCISE_INPUT_MODE_KEY = 'lingrazul:exerciseInputMode';
 
 // What plays automatically after tapping the correct answer on a flashcard:
 // - 'correct': speaks the actual reading (same audio as tapping the
@@ -26,6 +27,16 @@ const CUSTOM_CELEBRATION_NAME_KEY = 'lingrazul:customCelebrationSoundName';
 //   variation behavior.
 // Either way, muted still silences it entirely (checked at the call site).
 export type AnnounceMode = 'correct' | 'celebration';
+
+// How a Practical Lesson's fill-in-the-blank steps (see
+// lib/lessonBlanks.ts) are answered:
+// - 'tap': fill the blank by tapping a word bubble from a shuffled bank
+//   (the correct answer plus decoys) - no keyboard/IME needed.
+// - 'type': type the answer directly, in either kana or romaji (see
+//   lib/lessonBlanks.ts's isCorrectBlankAnswer).
+// Defaults to 'tap' since it works identically on every device without
+// needing a Japanese keyboard set up first.
+export type ExerciseInputMode = 'tap' | 'type';
 
 interface PreferencesContextValue {
   themeMode: ThemeMode;
@@ -48,6 +59,8 @@ interface PreferencesContextValue {
   customCelebrationSoundUri: string | null;
   customCelebrationSoundName: string | null;
   setCustomCelebrationSound: (uri: string | null, name: string | null) => void;
+  exerciseInputMode: ExerciseInputMode;
+  setExerciseInputMode: (mode: ExerciseInputMode) => void;
   // True once the persisted values have been read from disk. Screens that
   // care about flicker (e.g. showing the wrong theme for a frame) can wait
   // on this before rendering anything theme-sensitive.
@@ -57,13 +70,28 @@ interface PreferencesContextValue {
 const PreferencesContext = createContext<PreferencesContextValue | undefined>(undefined);
 
 export function PreferencesProvider({ children }: { children: ReactNode }) {
-  const systemScheme = useColorScheme();
+  const rnSystemScheme = useColorScheme();
+  // react-native-web's useColorScheme()/Appearance change listener can miss
+  // updates that happen while the tab was backgrounded or the device was
+  // asleep - the underlying `prefers-color-scheme` media-query change event
+  // doesn't get queued/replayed once JS resumes, so the hook can keep
+  // reporting whatever scheme was current when the tab was last active.
+  // This is exactly the bug reported: theme is wrong on cold load or after
+  // the app sat asleep, and only "fixes itself" once something forces a
+  // re-render with an explicit (non-'system') themeMode. liveSystemScheme
+  // starts from the same hook but is explicitly re-synced (see the effect
+  // below) whenever the page becomes visible/focused again, so a stale
+  // read gets corrected without the user having to touch Settings.
+  const [liveSystemScheme, setLiveSystemScheme] = useState<ColorScheme>(
+    rnSystemScheme === 'light' ? 'light' : 'dark'
+  );
   const [themeMode, setThemeModeState] = useState<ThemeMode>('system');
   const [muted, setMutedState] = useState(false);
   const [announceMode, setAnnounceModeState] = useState<AnnounceMode>('celebration');
   const [customCelebrationEnabled, setCustomCelebrationEnabledState] = useState(false);
   const [customCelebrationSoundUri, setCustomCelebrationSoundUriState] = useState<string | null>(null);
   const [customCelebrationSoundName, setCustomCelebrationSoundNameState] = useState<string | null>(null);
+  const [exerciseInputMode, setExerciseInputModeState] = useState<ExerciseInputMode>('tap');
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -76,6 +104,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
           storedCustomEnabled,
           storedCustomUri,
           storedCustomName,
+          storedExerciseInputMode,
         ] = await Promise.all([
           AsyncStorage.getItem(THEME_MODE_KEY),
           AsyncStorage.getItem(MUTED_KEY),
@@ -83,6 +112,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
           AsyncStorage.getItem(CUSTOM_CELEBRATION_ENABLED_KEY),
           AsyncStorage.getItem(CUSTOM_CELEBRATION_URI_KEY),
           AsyncStorage.getItem(CUSTOM_CELEBRATION_NAME_KEY),
+          AsyncStorage.getItem(EXERCISE_INPUT_MODE_KEY),
         ]);
         if (storedTheme === 'light' || storedTheme === 'dark' || storedTheme === 'system') {
           setThemeModeState(storedTheme);
@@ -102,10 +132,40 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         if (storedCustomName != null) {
           setCustomCelebrationSoundNameState(storedCustomName);
         }
+        if (storedExerciseInputMode === 'tap' || storedExerciseInputMode === 'type') {
+          setExerciseInputModeState(storedExerciseInputMode);
+        }
       } finally {
         setReady(true);
       }
     })();
+  }, []);
+
+  // Normal path: keep liveSystemScheme in sync whenever react-native's own
+  // Appearance change listener does fire correctly.
+  useEffect(() => {
+    setLiveSystemScheme(rnSystemScheme === 'light' ? 'light' : 'dark');
+  }, [rnSystemScheme]);
+
+  // Safety-net path for the case that listener misses: explicitly re-read
+  // Appearance.getColorScheme() the moment the page/tab becomes visible or
+  // focused again (the "just woke up from sleep" moment), plus once eagerly
+  // on mount to also cover a stale value at cold hydration. Web-only -
+  // native's AppState-driven Appearance updates don't have this gap, and
+  // `document`/`window` aren't available off-web.
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const recheckSystemScheme = () => {
+      const current = Appearance.getColorScheme();
+      setLiveSystemScheme(current === 'light' ? 'light' : 'dark');
+    };
+    recheckSystemScheme();
+    document.addEventListener('visibilitychange', recheckSystemScheme);
+    window.addEventListener('focus', recheckSystemScheme);
+    return () => {
+      document.removeEventListener('visibilitychange', recheckSystemScheme);
+      window.removeEventListener('focus', recheckSystemScheme);
+    };
   }, []);
 
   const setThemeMode = (mode: ThemeMode) => {
@@ -145,9 +205,12 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const scheme: ColorScheme = themeMode === 'system'
-    ? (systemScheme === 'light' ? 'light' : 'dark')
-    : themeMode;
+  const setExerciseInputMode = (mode: ExerciseInputMode) => {
+    setExerciseInputModeState(mode);
+    AsyncStorage.setItem(EXERCISE_INPUT_MODE_KEY, mode).catch(() => {});
+  };
+
+  const scheme: ColorScheme = themeMode === 'system' ? liveSystemScheme : themeMode;
   const colors = colorsFor(scheme);
 
   const value = useMemo<PreferencesContextValue>(
@@ -155,11 +218,13 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       themeMode, setThemeMode, scheme, colors, muted, setMuted, announceMode, setAnnounceMode,
       customCelebrationEnabled, setCustomCelebrationEnabled,
       customCelebrationSoundUri, customCelebrationSoundName, setCustomCelebrationSound,
+      exerciseInputMode, setExerciseInputMode,
       ready,
     }),
     [
       themeMode, scheme, colors, muted, announceMode,
       customCelebrationEnabled, customCelebrationSoundUri, customCelebrationSoundName,
+      exerciseInputMode,
       ready,
     ]
   );

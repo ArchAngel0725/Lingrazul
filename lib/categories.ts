@@ -18,6 +18,7 @@
 // lib/cardCashe.ts resolves to the real `kanji` table.
 
 import { supabase } from './supabase';
+import { DEFAULT_LANGUAGE_CODE, getLanguageConfig } from './languageConfig';
 
 export const WORD_CATEGORY_FALLBACK = [
   'demonstrative',
@@ -36,12 +37,15 @@ export const LETTER_CATEGORIES_FALLBACK = [
   'youon', 'katakana-extended', 'kanji',
 ];
 
-async function fetchCategoryKeys(contentType: 'word' | 'letter'): Promise<string[]> {
+async function fetchCategoryKeys(
+  contentType: 'word' | 'letter',
+  languageCode: string
+): Promise<string[]> {
   const { data, error } = await supabase
     .from('categories')
     .select('key, sort_order, languages!inner(code)')
     .eq('content_type', contentType)
-    .eq('languages.code', 'ja')
+    .eq('languages.code', languageCode)
     .order('sort_order', { ascending: true });
 
   if (error || !data) {
@@ -51,13 +55,16 @@ async function fetchCategoryKeys(contentType: 'word' | 'letter'): Promise<string
   return data.map((row: any) => row.key as string);
 }
 
-export function fetchWordCategoryKeys(): Promise<string[]> {
-  return fetchCategoryKeys('word');
+export function fetchWordCategoryKeys(languageCode: string = DEFAULT_LANGUAGE_CODE): Promise<string[]> {
+  return fetchCategoryKeys('word', languageCode);
 }
 
-// Appends the 'kanji' pseudo-category (see file header) to the live letter
-// category list.
-export async function fetchLetterCategoryKeys(): Promise<string[]> {
-  const keys = await fetchCategoryKeys('letter');
-  return [...keys, 'kanji'];
+// Appends the language's unique-feature pseudo-category (e.g. 'kanji' for
+// Japanese - see file header and languageConfig.ts) to the live letter
+// category list. Languages with no unique feature (uniqueFeatureCategoryKey
+// null) get no extra entry.
+export async function fetchLetterCategoryKeys(languageCode: string = DEFAULT_LANGUAGE_CODE): Promise<string[]> {
+  const keys = await fetchCategoryKeys('letter', languageCode);
+  const uniqueFeatureKey = getLanguageConfig(languageCode).uniqueFeatureCategoryKey;
+  return uniqueFeatureKey ? [...keys, uniqueFeatureKey] : keys;
 }
