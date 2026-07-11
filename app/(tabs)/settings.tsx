@@ -37,6 +37,7 @@ export default function SettingsScreen() {
     customCelebrationEnabled, setCustomCelebrationEnabled,
     customCelebrationSoundUri, customCelebrationSoundName, setCustomCelebrationSound,
     exerciseInputMode, setExerciseInputMode,
+    showPictures, setShowPictures,
   } = usePreferences();
   const router = useRouter();
   const [email, setEmail] = useState<string | null>(null);
@@ -204,7 +205,21 @@ export default function SettingsScreen() {
       {/* Learning */}
       <Text style={[styles.sectionTitle, { color: colors.textFaint }]}>Learning</Text>
       <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-        <TouchableOpacity style={styles.row} onPress={handleResetFilters}>
+        <View style={styles.row}>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>Enable pictures/emojis</Text>
+          <Switch
+            value={showPictures}
+            onValueChange={setShowPictures}
+            trackColor={{ false: colors.border, true: colors.accent }}
+            thumbColor={colors.surface}
+          />
+        </View>
+        <Text style={[styles.rowHint, { color: colors.textFaint }]}>
+          When a flashcard has a photo or emoji, shows it instead of the word and quizzes on
+          which word matches the picture. Off shows every card as plain text, same as before.
+        </Text>
+
+        <TouchableOpacity style={[styles.row, { marginTop: 16 }]} onPress={handleResetFilters}>
           <Text style={[styles.rowLabel, { color: colors.text }]}>Reset flashcard filters</Text>
           <Text style={[styles.rowChevron, { color: colors.textFaint }]}>›</Text>
         </TouchableOpacity>

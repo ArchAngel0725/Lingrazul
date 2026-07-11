@@ -41,18 +41,17 @@ import { recordAnswer, ProgressContentType } from '../../lib/progress';
 import { shuffle } from '../../lib/random';
 import { useActiveLanguage } from '../../lib/activeLanguage';
 import { LetterModePair } from '../../lib/languageConfig';
+import { getCorrectChoiceText, hasCardPicture, getKanaText } from '../../lib/cardDisplay';
 
 const ALL_CATEGORIES = WORD_CATEGORY_FALLBACK;
 
 export default function OfflineScreen() {
-  const { colors, muted, setMuted, announceMode, setAnnounceMode } = usePreferences();
+  const { colors, muted, setMuted, announceMode, setAnnounceMode, showPictures } = usePreferences();
   const { languageCode, languageConfig } = useActiveLanguage();
   // Sourced from the active language's config (see languageConfig.ts)
   // instead of a hardcoded Japanese-only constant, so a second language
   // brings its own valid script pairs without touching this screen.
   const LETTER_MODES = languageConfig.letterModes;
-  const UNIQUE_FEATURE_KEY = languageConfig.uniqueFeatureCategoryKey;
-  const UNIQUE_FEATURE_DEFAULT_MODE = languageConfig.uniqueFeatureDefaultMode;
   const isNarrow = useIsNarrow();
   const [loading, setLoading] = useState(true);
   const [currentCard, setCurrentCard] = useState<FlashCard | LetterCard | null>(null);
@@ -218,33 +217,18 @@ export default function OfflineScreen() {
 
   // --- Toggle a letter category on/off, persisting the result ---
   //
-  // Turning on the language's unique-feature category (e.g. 'kanji' for
-  // Japanese - see languageConfig.ts) is treated as switching into a
-  // dedicated session for it rather than adding it alongside whatever else
-  // was selected: it clears word categories and any other letter
-  // categories, and swaps in that feature's default testing mode. Without
-  // this, e.g. kanji rows would get mixed into an otherwise-unrelated
-  // word/kana session by default, and the mode list would still default to
-  // kana-only modes that never show the kanji character at all - which is
-  // what produced an empty, crash-inducing mode selection before (nothing
-  // in the old default modes felt relevant to kanji, so it got manually
-  // deselected down to nothing).
+  // Kanji (the language's unique-feature category, e.g. 'kanji' for
+  // Japanese - see languageConfig.ts) used to be special-cased here to
+  // exclusively take over the session (clearing word/other letter
+  // categories) and force its own default mode, because a kanji row
+  // selected under an incompatible mode used to produce an empty,
+  // crash-inducing selection. That's no longer a risk: cardCashe.ts's
+  // fetchLetterCards already skips any row with zero compatible modes
+  // rather than crashing on it, and offline.tsx's `noResults` state already
+  // handles "nothing matched" cleanly. So kanji is now a plain toggle like
+  // every other letter category - selectable alongside word/kana
+  // categories, with whatever modes are checked in the Mode panel.
   const handleLetterCategoryToggle = (cat: string) => {
-    if (
-      UNIQUE_FEATURE_KEY && UNIQUE_FEATURE_DEFAULT_MODE &&
-      cat === UNIQUE_FEATURE_KEY && !selectedLetterCategories.includes(UNIQUE_FEATURE_KEY)
-    ) {
-      setSelectedLetterCategories([UNIQUE_FEATURE_KEY]);
-      saveStudyLetterCategories([UNIQUE_FEATURE_KEY]);
-
-      setSelectedCategories([]);
-      saveStudyWordCategories([]);
-
-      setSelectedModes([UNIQUE_FEATURE_DEFAULT_MODE]);
-      saveStudyModeIndexes([LETTER_MODES.indexOf(UNIQUE_FEATURE_DEFAULT_MODE)]);
-      return;
-    }
-
     setSelectedLetterCategories(prev => {
       const next = prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat];
       saveStudyLetterCategories(next);
@@ -259,14 +243,6 @@ export default function OfflineScreen() {
       saveStudyModeIndexes(next.map(m => LETTER_MODES.indexOf(m)));
       return next;
     });
-  };
-
-  // --- Get correct answer text from any card type ---
-  const getCorrectAnswer = (card: FlashCard | LetterCard): string => {
-    if (card.cardType === 'letter') {
-      return (card as any)[card.answerScript];
-    }
-    return (card as FlashCard).nativeLanguage;
   };
 
   // --- Fetches new cards using the currently applied word + letter categories ---
@@ -330,16 +306,28 @@ export default function OfflineScreen() {
       ? await fetchFlashCards(20, selectedCategories, maxDifficulty, selectedTags, languageCode)
       : [];
     const decoyWords = decoyCards.map(c => ({ id: c.id, text: c.nativeLanguage }));
+    // Picture-quiz mode decoy pool (see cardDisplay.ts's hasCardPicture) -
+    // the card's own term (learningLanguage), not its translation, since
+    // that's what's being tested once a picture replaces the word itself.
+    // Built from the same fetched batch, no extra network call.
+    const frontDecoyWords = decoyCards.map(c => ({ id: c.id, text: c.learningLanguage }));
 
     // Fetch letter decoys if letters selected - same id tagging, which
     // matters more here since one row has 3 valid-looking readings
     // (hiragana/katakana/romaji) depending on which mode was rolled.
-    const letterDecoyPool = selectedLetterCategories.length > 0
-      ? (await fetchLetterCards(30, selectedModes, selectedLetterCategories, maxDifficulty, selectedTags, languageCode))
-          .map(c => ({ id: c.id, text: (c as any)[c.answerScript] as string }))
+    const letterDecoySource = selectedLetterCategories.length > 0
+      ? await fetchLetterCards(30, selectedModes, selectedLetterCategories, maxDifficulty, selectedTags, languageCode)
       : [];
+    const letterDecoyPool = letterDecoySource.map(c => ({ id: c.id, text: (c as any)[c.answerScript] as string }));
+    // Picture-quiz mode decoy pool for letter/kanji cards - always kana
+    // (see cardDisplay.ts's getKanaText/getCorrectChoiceText), regardless
+    // of whatever questionScript/answerScript that row's mode happened to
+    // roll (meaning, romaji, the bare kanji glyph, etc.) - a picture is
+    // always quizzed in kana, never those. Same source fetch as
+    // letterDecoyPool above.
+    const letterFrontDecoyPool = letterDecoySource.map(c => ({ id: c.id, text: getKanaText(c) }));
 
-    initQueue(allCards, decoyWords, letterDecoyPool);
+    initQueue(allCards, decoyWords, letterDecoyPool, frontDecoyWords, letterFrontDecoyPool);
     showNextCard();
     setLoading(false);
   };
@@ -377,11 +365,14 @@ export default function OfflineScreen() {
     const next = queue[0].card;
     setCurrentCard(next);
 
-    // Get correct answer based on card type
-    const correctAnswer = getCorrectAnswer(next);
+    // Picture-quiz mode (see cardDisplay.ts's hasCardPicture) tests the
+    // card's own term instead of its usual translation/reading, and pulls
+    // decoys from the matching front-term pool instead of the normal one.
+    const pictureMode = hasCardPicture(next, showPictures);
+    const correctAnswer = getCorrectChoiceText(next, showPictures);
 
     // Build choices - 1 correct + 3 decoys shuffled
-    const decoys = getDecoys(correctAnswer, next.cardType, next.id);
+    const decoys = getDecoys(correctAnswer, next.cardType, next.id, pictureMode);
     const allChoices = [correctAnswer, ...decoys];
     const shuffled = shuffle(allChoices);
     setChoices(shuffled);
@@ -389,10 +380,16 @@ export default function OfflineScreen() {
 
   // --- Called when user taps the correct answer ---
   // usedHint is true if the question was tapped to hear it spoken this card -
-  // in that case the card still advances normally, but the answer is not
-  // written to progress at all (neither helps nor hurts accuracy), since
-  // hearing the reading spoken makes "getting it right" meaningless as a
-  // signal. This is independent of mute state by design.
+  // in that case the answer is not written to progress at all (neither
+  // helps nor hurts accuracy), since hearing the reading spoken makes
+  // "getting it right" meaningless as a signal. This is independent of mute
+  // state by design.
+  //
+  // This only does bookkeeping (progress, queue rotation, background
+  // refill) - it deliberately does NOT advance to the next card anymore.
+  // FlashCardComponent stays on the answered card, showing just the
+  // correct choice plus a Next button, and calls handleAdvance (below)
+  // itself once the user actually taps it.
   const handleCorrect = (wasFirstTry: boolean, usedHint: boolean) => {
     if (!currentCard) return;
     markCorrect(currentCard.id);
@@ -415,6 +412,10 @@ export default function OfflineScreen() {
         addCards(newCards);
       });
     }
+  };
+
+  // --- Called when the user taps "Next" after answering correctly ---
+  const handleAdvance = () => {
     showNextCard();
   };
 
@@ -646,6 +647,7 @@ export default function OfflineScreen() {
           card={currentCard}
           choices={choices}
           onCorrect={handleCorrect}
+          onAdvance={handleAdvance}
           muted={muted}
           announceMode={announceMode}
         />

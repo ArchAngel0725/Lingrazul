@@ -139,6 +139,9 @@ interface CombinedLetterRow {
   katakana: string;
   romaji: string;
   kanji: string | null;
+  // '' for kana rows, same reasoning as katakana above - see cards.ts's
+  // LetterCard.meaning.
+  meaning: string;
   hasKanji: boolean;
   difficulty: number;
   category: string;
@@ -204,6 +207,7 @@ async function fetchKanaRowsForCategory(
       katakana: pair.katakana?.character ?? '',
       romaji: romaji.startsWith('__no_romaji_') ? '' : romaji,
       kanji: null,
+      meaning: '',
       hasKanji: false,
       difficulty: base.difficulty,
       category: catKey,
@@ -254,12 +258,13 @@ async function fetchKanjiRows(
       katakana: '', // kanji rows never had a katakana form in the old schema either
       romaji: primaryReading?.romaji ?? '',
       kanji: row.character,
+      meaning: primaryTranslation?.translation ?? '',
       hasKanji: true,
       difficulty: row.difficulty,
       category: uniqueFeatureCategoryKey,
-      // English meaning isn't surfaced as a quiz script today (no
-      // "kanji -> meaning" mode exists in LETTER_MODES) - kept off the
-      // tags array so it doesn't get treated as a filterable tag.
+      // meaning is kept off the tags array so it doesn't get treated as a
+      // filterable tag - it's surfaced as a real quiz script instead (see
+      // languageConfig.ts's 'kanji' <-> 'meaning' mode pairs).
       tags: row.tags ?? [],
       imageUrl: row.image_url ?? null,
       emoji: row.emoji ?? null,
@@ -308,15 +313,18 @@ export async function fetchLetterCards(
   const rows = shuffle([...kanaPools.flat(), ...kanjiPool]);
 
   // For each row pick a random mode from the enabled modes - but only from
-  // modes that row can actually satisfy. A 'kanji' question/answer script
-  // needs row.hasKanji to be true; ordinary kana rows don't have that, so
-  // a kanji-only mode selection would otherwise leave nothing pickable.
-  // Rows that end up with zero compatible modes are skipped rather than
-  // crashing on an undefined mode.
+  // modes that row can actually satisfy. A 'kanji' or 'meaning' question/
+  // answer script needs row.hasKanji to be true; ordinary kana rows don't
+  // have that (no kanji glyph, no kanji_translations meaning), so a
+  // kanji-only or meaning-only mode selection would otherwise leave nothing
+  // pickable. Rows that end up with zero compatible modes are skipped
+  // rather than crashing on an undefined mode.
   const cards: LetterCard[] = rows
     .map(row => {
       const compatibleModes = modes.filter(
-        m => (m.question !== 'kanji' || row.hasKanji) && (m.answer !== 'kanji' || row.hasKanji)
+        m =>
+          (m.question !== 'kanji' || row.hasKanji) && (m.answer !== 'kanji' || row.hasKanji) &&
+          (m.question !== 'meaning' || row.hasKanji) && (m.answer !== 'meaning' || row.hasKanji)
       );
       if (compatibleModes.length === 0) return null;
 
@@ -332,6 +340,7 @@ export async function fetchLetterCards(
         katakana: row.katakana,
         romaji: row.romaji,
         kanji: row.kanji,
+        meaning: row.meaning,
         hasKanji: row.hasKanji,
         questionScript: mode.question,
         answerScript: mode.answer,

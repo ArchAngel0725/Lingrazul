@@ -22,7 +22,7 @@ export interface FlashCard extends DataCard {
   reading: string;
   nativeLanguage: string;
 }
-export type LetterScript = 'hiragana' | 'katakana' | 'romaji' | 'kanji';
+export type LetterScript = 'hiragana' | 'katakana' | 'romaji' | 'kanji' | 'meaning';
 
 export interface LetterCard extends DataCard {
   cardType: 'letter';
@@ -31,6 +31,12 @@ export interface LetterCard extends DataCard {
   romaji: string;
   // null/false for ordinary kana rows - only kanji-category rows have these set.
   kanji: string | null;
+  // '' for ordinary kana rows, same reasoning/pattern as katakana above -
+  // only kanji rows have a kanji_translations meaning to show. Kept as a
+  // plain string (not null) like the other script fields so
+  // `card[questionScript]`-style generic indexing (see
+  // flashcardcomponent.tsx's getQuestion/getAnswer) stays type-safe.
+  meaning: string;
   hasKanji: boolean;
   questionScript: LetterScript;
   answerScript: LetterScript;

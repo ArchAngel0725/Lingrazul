@@ -1,10 +1,13 @@
 -- Lingrazul: RECONSTRUCT SCHEMA - a single consolidated snapshot of the
--- live database's structure as of 2026-07-06, for version control. This is
--- NOT a new migration step - it's the flattened end state of every v2_*.sql
--- file in this folder (plus the v1 tables still actually in use), assembled
--- into one file so the schema's current shape lives in git as one readable
--- source of truth instead of only being reconstructable by reading a dozen
--- incremental files in the right order.
+-- live database's structure as of 2026-07-11 (originally written 2026-07-06,
+-- updated to fold in the lesson_type/lesson_section_blanks additions from
+-- 2026-07-07 and the image_url/emoji columns + card-images storage bucket
+-- from 2026-07-11), for version control. This is NOT a new migration step -
+-- it's the flattened end state of every v2_*.sql file in this folder (plus
+-- the v1 tables still actually in use), assembled into one file so the
+-- schema's current shape lives in git as one readable source of truth
+-- instead of only being reconstructable by reading a dozen incremental
+-- files in the right order.
 --
 -- SCHEMA ONLY - no data. The tiny reference rows some tables need to be
 -- usable (languages 'ja'/'en', letter_types hiragana/katakana,
@@ -25,8 +28,10 @@
 -- ACCURACY NOTE: the v2 tables, progress tables, and lessons tables below
 -- are exact - copied from this repo's own v2_content_schema.sql,
 -- v2_unique_features.sql, v2_schema_hardening.sql, v2_add_kanji_reading_romaji.sql,
--- v2_add_read_policies.sql, v2_progress_schema.sql, and v2_lessons_schema.sql,
--- flattened to their current combined state. The v1 tables in section F
+-- v2_add_read_policies.sql, v2_progress_schema.sql, v2_lessons_schema.sql,
+-- v2_add_lesson_type.sql, v2_add_lesson_blanks.sql, v2_add_photo_columns.sql,
+-- and v2_add_emoji_column.sql, flattened to their current combined state.
+-- The v1 tables in section F
 -- (letters_japanese, words_japanese, words_english, words_chinese,
 -- word_descriptions, user_progress) have NO creation script anywhere in
 -- this repo's history - they were made directly via the Supabase table
@@ -50,6 +55,7 @@
 drop table if exists kanji_progress cascade;
 drop table if exists word_progress cascade;
 drop table if exists letter_progress cascade;
+drop table if exists lesson_section_blanks cascade;
 drop table if exists lesson_sections cascade;
 drop table if exists lessons cascade;
 drop table if exists kanji_translations cascade;
@@ -148,6 +154,8 @@ create table letters (
   difficulty int not null default 1,
   tags text[] not null default '{}',
   created_at timestamptz not null default now(),
+  image_url text,   -- added by v2_add_photo_columns.sql; null on nearly every row
+  emoji text,       -- added by v2_add_emoji_column.sql; null unless hand-curated
   constraint letters_language_type_character_key unique (language_id, letter_type_id, character)
 );
 
@@ -185,7 +193,9 @@ create table words (
   text text not null,
   difficulty int not null default 1,
   tags text[] not null default '{}',
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  image_url text,   -- added by v2_add_photo_columns.sql; null on nearly every row
+  emoji text        -- added by v2_add_emoji_column.sql; populated for animals + a few verbs
 );
 
 create index words_language_category_idx
@@ -221,7 +231,9 @@ create table kanji (
   difficulty int not null default 1,
   tags text[] not null default '{}',
   created_at timestamptz not null default now(),
-  unique_feature_id uuid not null references unique_features (id) on delete restrict
+  unique_feature_id uuid not null references unique_features (id) on delete restrict,
+  image_url text,   -- added by v2_add_photo_columns.sql; null on nearly every row
+  emoji text        -- added by v2_add_emoji_column.sql; populated for 67 of 109 N5 kanji
 );
 
 create index kanji_language_category_idx
@@ -267,6 +279,22 @@ create index kanji_translations_kanji_target_idx
   on kanji_translations (kanji_id, target_language_id);
 create index kanji_translations_target_language_idx
   on kanji_translations (target_language_id);
+
+-- --- A12. card-images storage bucket - added by v2_add_photo_columns.sql -
+--     public bucket for hand-uploaded photos referenced by words/letters/
+--     kanji.image_url. Public read so the app's anon key can load images
+--     directly by URL, same "public reference content" reasoning as the
+--     content tables' blanket read policies below. No write policy - images
+--     are uploaded by hand via the Supabase dashboard, not by the app.
+
+insert into storage.buckets (id, name, public)
+values ('card-images', 'card-images', true)
+on conflict (id) do nothing;
+
+drop policy if exists "Public read access for card-images" on storage.objects;
+create policy "Public read access for card-images"
+  on storage.objects for select
+  using (bucket_id = 'card-images');
 
 
 -- =========================================================================
@@ -435,6 +463,10 @@ create table lessons (
   subtitle text,
   sort_order int not null default 0,
   created_at timestamptz not null default now(),
+  -- added by v2_add_lesson_type.sql - distinguishes the original curated
+  -- reading lessons ("Fundamentals") from click-through "Practical Lessons"
+  lesson_type text not null default 'fundamentals'
+    check (lesson_type in ('fundamentals', 'practical')),
   unique (language_id, key)
 );
 
@@ -458,6 +490,31 @@ create index lesson_sections_lesson_idx
 
 alter table lesson_sections enable row level security;
 create policy "Anyone can read lesson sections" on lesson_sections for select using (true);
+
+-- --- E3. lesson_section_blanks - added by v2_add_lesson_blanks.sql - at
+--     most one fill-in-the-blank exercise per lesson_sections row, backing
+--     Practical Lessons' Test panel (BlankExercise/lib/lessonBlanks.ts).
+
+create table lesson_section_blanks (
+  id uuid primary key default gen_random_uuid(),
+  lesson_section_id uuid not null references lesson_sections (id) on delete cascade,
+  prompt_before text not null default '',
+  prompt_after text not null default '',
+  answer_kana text[] not null default '{}',
+  answer_romaji text[] not null default '{}',
+  decoy_words text[] not null default '{}',
+  created_at timestamptz not null default now(),
+  constraint lesson_section_blanks_one_per_section unique (lesson_section_id),
+  constraint lesson_section_blanks_has_answer check (
+    array_length(answer_kana, 1) > 0 or array_length(answer_romaji, 1) > 0
+  )
+);
+
+create index lesson_section_blanks_section_idx
+  on lesson_section_blanks (lesson_section_id);
+
+alter table lesson_section_blanks enable row level security;
+create policy "Anyone can read lesson section blanks" on lesson_section_blanks for select using (true);
 
 
 -- =========================================================================

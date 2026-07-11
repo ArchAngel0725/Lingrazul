@@ -33,7 +33,7 @@ export const WORD_CATEGORY_FALLBACK = [
 export const LETTER_CATEGORIES_FALLBACK = [
   'vowel', 'k-row', 's-row', 't-row', 'n-row',
   'h-row', 'm-row', 'y-row', 'r-row', 'w-row',
-  'n-standalone', 'dakuten', 'handakuten',
+  'dakuten', 'handakuten',
   'youon', 'katakana-extended', 'kanji',
 ];
 

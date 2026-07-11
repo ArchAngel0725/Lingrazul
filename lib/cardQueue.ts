@@ -44,9 +44,24 @@ let activeQueue: QueuedCard[] = [];  // cards currently in play
 let restedQueue: QueuedCard[] = [];
 let wordPool: DecoyEntry[] = [];     // decoy words for word card wrong answers
 let letterPool: DecoyEntry[] = [];   // decoy letters for letter card wrong answers
+// Picture-quiz mode decoy pools (see cardDisplay.ts's hasCardPicture) - the
+// card's own term is what's being tested there instead of its
+// translation/reading, so these hold OTHER rows' own terms (word: kana/
+// kanji text; letter: whatever that row's questionScript happens to be),
+// not their answers. Kept separate from wordPool/letterPool rather than
+// merged, since the two modes need different text for what's otherwise the
+// exact same underlying rows.
+let wordFrontPool: DecoyEntry[] = [];
+let letterFrontPool: DecoyEntry[] = [];
 
-// Called once on tab load - sets up the queue and both decoy pools
-export function initQueue(cards: AnyCard[], decoys: DecoyEntry[], letterDecoys: DecoyEntry[] = []) {
+// Called once on tab load - sets up the queue and every decoy pool
+export function initQueue(
+  cards: AnyCard[],
+  decoys: DecoyEntry[],
+  letterDecoys: DecoyEntry[] = [],
+  frontDecoys: DecoyEntry[] = [],
+  letterFrontDecoys: DecoyEntry[] = []
+) {
   activeQueue = cards.map(card => ({
     card,
     seenCount: 0,
@@ -54,6 +69,8 @@ export function initQueue(cards: AnyCard[], decoys: DecoyEntry[], letterDecoys: 
   }));
   wordPool = decoys;
   letterPool = letterDecoys;
+  wordFrontPool = frontDecoys;
+  letterFrontPool = letterFrontDecoys;
   restedQueue = [];
 }
 
@@ -143,6 +160,8 @@ export function clearQueue(): void {
   restedQueue = [];
   wordPool = [];
   letterPool = [];
+  wordFrontPool = [];
+  letterFrontPool = [];
 }
 
 // Returns 3 random decoys from the correct pool based on card type
@@ -154,8 +173,13 @@ export function clearQueue(): void {
 // re-fetched that same row under a different question/answer mode, its
 // text won't match correctAnswer as a string but it is still "correct" for
 // that row, so it has to be excluded by row id rather than by text alone.
-export function getDecoys(correctAnswer: string, cardType: string, excludeId: string): string[] {
-  const pool = cardType === 'letter' ? letterPool : wordPool;
+// pictureMode picks the front-term pools (see cardDisplay.ts's
+// hasCardPicture) instead of the normal answer-term pools - same exclusion
+// rules otherwise.
+export function getDecoys(correctAnswer: string, cardType: string, excludeId: string, pictureMode: boolean = false): string[] {
+  const pool = pictureMode
+    ? (cardType === 'letter' ? letterFrontPool : wordFrontPool)
+    : (cardType === 'letter' ? letterPool : wordPool);
   const filtered = pool.filter(entry => entry.text !== correctAnswer && entry.id !== excludeId);
   const shuffled = shuffle(filtered);
 

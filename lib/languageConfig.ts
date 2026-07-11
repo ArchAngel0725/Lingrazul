@@ -42,11 +42,6 @@ export interface LanguageConfig {
   // screen can quiz on for this language's letter/unique-feature cards -
   // replaces offline.tsx's hardcoded LETTER_MODES constant.
   letterModes: LetterModePair[];
-  // Which mode a session should jump to when the user toggles into
-  // "exclusive focus" on this language's unique-feature category (see
-  // offline.tsx's handleLetterCategoryToggle) - null if this language has
-  // no such feature.
-  uniqueFeatureDefaultMode: LetterModePair | null;
   // The pseudo-category key the Letters panel treats as "the unique
   // feature, toggle-exclusive" (e.g. 'kanji' for Japanese - see
   // categories.ts/cardCashe.ts's existing 'kanji' pseudo-category
@@ -82,8 +77,12 @@ const JAPANESE_CONFIG: LanguageConfig = {
     { question: 'kanji', answer: 'hiragana' },
     { question: 'kanji', answer: 'romaji' },
     { question: 'hiragana', answer: 'kanji' },
+    // Meaning ("English translation of the kanji") is also kanji-only -
+    // ordinary kana rows have no kanji_translations row to pull from (see
+    // cardCashe.ts's CombinedLetterRow.meaning, '' for kana rows).
+    { question: 'kanji', answer: 'meaning' },
+    { question: 'meaning', answer: 'kanji' },
   ],
-  uniqueFeatureDefaultMode: { question: 'kanji', answer: 'hiragana' },
   uniqueFeatureCategoryKey: 'kanji',
 };
 

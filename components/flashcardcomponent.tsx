@@ -1,7 +1,9 @@
 // ALark-Claude_Review@MEGADATA
 // FlashCardComponent.tsx - Renders a flashcard with vanishing multiple choice options
 // Supports both FlashCard (words) and LetterCard (hiragana/katakana/romaji)
-// Wrong answers disappear on tap, correct answer advances to next card
+// Wrong answers disappear on tap; a correct answer freezes the card on that
+// choice plus a Next button instead of auto-advancing (see the `answered`
+// state and the `onAdvance` prop).
 
 import { useState, useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
@@ -11,6 +13,7 @@ import { FlashCard, LetterCard } from '../lib/cards';
 import { usePreferences } from '../lib/preferences';
 import { useIsNarrow } from '../lib/responsive';
 import { getLanguageConfig } from '../lib/languageConfig';
+import { getQuestionText, getCorrectChoiceText, hasCardPicture } from '../lib/cardDisplay';
 
 // Celebration phrases, particle pronunciation overrides, and TTS locale all
 // now come from the card's own `language` field via getLanguageConfig()
@@ -31,6 +34,11 @@ interface Props {
   // as a signal. This checks whether the hint was tapped, not whether audio
   // was actually muted - tapping counts as using the hint either way.
   onCorrect: (wasFirstTry: boolean, usedHint: boolean) => void;
+  // Called when the user taps "Next" after answering correctly - the card
+  // no longer advances on its own the moment the correct choice is tapped
+  // (see the `answered` state below), so the parent needs an explicit
+  // signal for when to actually swap in the next card.
+  onAdvance: () => void;
   muted: boolean;
   // 'celebration' (default): a random Japanese exclamation plays on a
   // correct answer, as before. 'correct': the actual reading is spoken
@@ -39,14 +47,6 @@ interface Props {
   // way this is unrelated to heardHint/scoring - it always counts normally.
   announceMode: 'correct' | 'celebration';
 }
-
-// Gets the question text based on card type
-const getQuestion = (card: FlashCard | LetterCard): string => {
-  if (card.cardType === 'letter') {
-    return card[card.questionScript as keyof LetterCard] as string;
-  }
-  return (card as FlashCard).learningLanguage;
-};
 
 // Gets the text that should actually be spoken aloud for a card's question.
 // Differs from getQuestion() in two cases:
@@ -78,7 +78,14 @@ const getSpokenQuestion = (card: FlashCard | LetterCard): string => {
   if (card.cardType === 'letter' && card.questionScript === 'romaji') {
     return card.hiragana || card.katakana;
   }
-  const text = getQuestion(card);
+  // 'meaning' is an English translation, same problem as 'romaji' above -
+  // fall back to the kana reading instead of asking the Japanese voice to
+  // read English words aloud. Only kanji rows ever have this questionScript
+  // (see languageConfig.ts), so hiragana is always populated here.
+  if (card.cardType === 'letter' && card.questionScript === 'meaning') {
+    return card.hiragana;
+  }
+  const text = getQuestionText(card);
   if (card.cardType === 'flash' && (card as FlashCard).category === 'particle') {
     const overrides = getLanguageConfig(card.language).particlePronunciationOverrides;
     return overrides[text] ?? text;
@@ -86,19 +93,16 @@ const getSpokenQuestion = (card: FlashCard | LetterCard): string => {
   return text;
 };
 
-// Gets the correct answer text based on card type
-const getAnswer = (card: FlashCard | LetterCard): string => {
-  if (card.cardType === 'letter') {
-    return card[card.answerScript as keyof LetterCard] as string;
-  }
-  return (card as FlashCard).nativeLanguage;
-};
-
-export default function FlashCardComponent({ card, choices, onCorrect, muted, announceMode }: Props) {
-  const { colors, customCelebrationEnabled, customCelebrationSoundUri } = usePreferences();
+export default function FlashCardComponent({ card, choices, onCorrect, onAdvance, muted, announceMode }: Props) {
+  const { colors, customCelebrationEnabled, customCelebrationSoundUri, showPictures } = usePreferences();
   const isNarrow = useIsNarrow();
   const [visibleChoices, setVisibleChoices] = useState<string[]>(choices);
   const [wrongCount, setWrongCount] = useState(0);
+  // True once the correct choice has been tapped this card - the card then
+  // freezes on just that choice plus a Next button instead of auto-
+  // advancing, so the user can actually register the right answer (and, in
+  // picture-quiz mode, look at the picture again) before moving on.
+  const [answered, setAnswered] = useState(false);
   // Tracks whether the question was tapped to hear it spoken this card.
   // Resets per card - using the hint on a previous card must not bleed
   // into the next one.
@@ -116,7 +120,15 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
     setVisibleChoices(choices);
     setWrongCount(0);
     setHeardHint(false);
+    setAnswered(false);
   }, [card.id, choices]);
+
+  // Picture-quiz mode: hide the word/reading and test which term matches
+  // the picture instead (see lib/cardDisplay.ts). Off entirely when the
+  // "Enable pictures/emojis" setting is off, regardless of what this row's
+  // imageUrl/emoji hold.
+  const pictureMode = hasCardPicture(card, showPictures);
+  const correctChoiceText = getCorrectChoiceText(card, showPictures);
 
   useEffect(() => {
     return () => {
@@ -163,7 +175,7 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
   };
 
   const handleChoice = (choice: string) => {
-    if (choice === getAnswer(card)) {
+    if (choice === correctChoiceText) {
       if (announceMode === 'correct') {
         announceCorrectReading();
       } else if (customCelebrationEnabled && customCelebrationSoundUri) {
@@ -174,6 +186,7 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
       const wasFirstTry = wrongCount === 0;
       setWrongCount(0);
       onCorrect(wasFirstTry, heardHint);
+      setAnswered(true);
     } else {
       setWrongCount(prev => prev + 1);
       setVisibleChoices(prev => prev.filter(c => c !== choice));
@@ -197,17 +210,25 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
               fallback for rows with no photo uploaded yet. Most rows
               (letters, abstract/grammar words) have neither and render
               no picture at all, same layout as before this feature
-              existed. */}
-          {card.imageUrl ? (
+              existed. Gated behind pictureMode (which already folds in the
+              "Enable pictures/emojis" setting) rather than the raw
+              imageUrl/emoji check, so turning the setting off fully
+              restores the old text-only layout. */}
+          {pictureMode && card.imageUrl ? (
             <Image
               source={{ uri: card.imageUrl }}
               style={isNarrow ? styles.cardImageNarrow : styles.cardImage}
               resizeMode="contain"
             />
-          ) : card.emoji ? (
+          ) : pictureMode && card.emoji ? (
             <Text style={isNarrow ? styles.cardEmojiNarrow : styles.cardEmoji}>{card.emoji}</Text>
           ) : null}
-          <Text style={[isNarrow ? styles.mainTextNarrow : styles.mainText, { color: colors.text }]}>{getQuestion(card)}</Text>
+          {/* The word itself is the thing being tested in picture mode
+              (see cardDisplay.ts's hasCardPicture) - showing it here would
+              give the answer away, so only the picture is shown. */}
+          {!pictureMode && (
+            <Text style={[isNarrow ? styles.mainTextNarrow : styles.mainText, { color: colors.text }]}>{getQuestionText(card)}</Text>
+          )}
         </TouchableOpacity>
         {/* Category label (e.g. "verb", "particle") is only meaningful for
             word cards - letter cards use categories like "s-row" purely for
@@ -217,17 +238,36 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
         )}
       </View>
 
-      <View style={isNarrow ? styles.choicesContainerNarrow : styles.choicesContainer}>
-        {visibleChoices.map((choice, index) => (
+      {answered ? (
+        // Frozen post-answer state: just the correct choice (styled as
+        // "correct", no longer tappable) plus an explicit Next button - the
+        // card no longer swaps itself out the instant the correct choice is
+        // tapped, so the user can register the right answer (and re-look at
+        // a picture-mode picture) before choosing to move on.
+        <View style={isNarrow ? styles.choicesContainerNarrow : styles.choicesContainer}>
+          <View style={[styles.choiceButton, { backgroundColor: colors.accent, borderColor: colors.accent }]}>
+            <Text style={[styles.choiceText, { color: colors.accentText, fontWeight: 'bold' }]}>{correctChoiceText}</Text>
+          </View>
           <TouchableOpacity
-            key={index}
-            style={[styles.choiceButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            onPress={() => handleChoice(choice)}
+            style={[styles.nextButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+            onPress={onAdvance}
           >
-            <Text style={[styles.choiceText, { color: colors.text }]}>{choice}</Text>
+            <Text style={[styles.nextButtonText, { color: colors.text }]}>Next ›</Text>
           </TouchableOpacity>
-        ))}
-      </View>
+        </View>
+      ) : (
+        <View style={isNarrow ? styles.choicesContainerNarrow : styles.choicesContainer}>
+          {visibleChoices.map((choice, index) => (
+            <TouchableOpacity
+              key={index}
+              style={[styles.choiceButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              onPress={() => handleChoice(choice)}
+            >
+              <Text style={[styles.choiceText, { color: colors.text }]}>{choice}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
     </View>
   );
 }
@@ -326,5 +366,15 @@ const styles = StyleSheet.create({
   },
   choiceText: {
     fontSize: 16,
+  },
+  nextButton: {
+    padding: 18,
+    borderRadius: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  nextButtonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
   },
 });

@@ -16,6 +16,7 @@ const CUSTOM_CELEBRATION_ENABLED_KEY = 'lingrazul:customCelebrationEnabled';
 const CUSTOM_CELEBRATION_URI_KEY = 'lingrazul:customCelebrationSoundUri';
 const CUSTOM_CELEBRATION_NAME_KEY = 'lingrazul:customCelebrationSoundName';
 const EXERCISE_INPUT_MODE_KEY = 'lingrazul:exerciseInputMode';
+const SHOW_PICTURES_KEY = 'lingrazul:showPictures';
 
 // What plays automatically after tapping the correct answer on a flashcard:
 // - 'correct': speaks the actual reading (same audio as tapping the
@@ -61,6 +62,14 @@ interface PreferencesContextValue {
   setCustomCelebrationSound: (uri: string | null, name: string | null) => void;
   exerciseInputMode: ExerciseInputMode;
   setExerciseInputMode: (mode: ExerciseInputMode) => void;
+  // Whether Flash Cards shows a row's photo/emoji at all. On by default -
+  // when a row has one, this also switches that card into picture-quiz mode
+  // (see lib/cardDisplay.ts's hasCardPicture) instead of its usual
+  // question/answer script pair. Off restores the pre-picture-feature
+  // behavior unconditionally, regardless of what a row's image_url/emoji
+  // columns hold.
+  showPictures: boolean;
+  setShowPictures: (show: boolean) => void;
   // True once the persisted values have been read from disk. Screens that
   // care about flicker (e.g. showing the wrong theme for a frame) can wait
   // on this before rendering anything theme-sensitive.
@@ -82,9 +91,20 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   // starts from the same hook but is explicitly re-synced (see the effect
   // below) whenever the page becomes visible/focused again, so a stale
   // read gets corrected without the user having to touch Settings.
-  const [liveSystemScheme, setLiveSystemScheme] = useState<ColorScheme>(
-    rnSystemScheme === 'light' ? 'light' : 'dark'
-  );
+  // Starts at 'light' unconditionally - NOT derived from rnSystemScheme -
+  // because that's exactly what react-native-web's Appearance.getColorScheme()
+  // itself falls back to when there's no `window` (see its `canUseDOM` guard),
+  // which is the environment the static web export's prerender runs in. If
+  // this initializer read the real client-side value instead, any visitor
+  // whose OS is actually in dark mode would get a genuinely different
+  // colorScheme (and therefore different themed styles) on their first
+  // client render than what's already sitting in the static HTML - a real
+  // mismatch, not just a stale one, causing a React hydration error
+  // (minified #418) that force-discards and rebuilds the whole tree client
+  // side. The effects below correct this to the real value immediately
+  // after mount, which happens after hydration completes and is therefore
+  // just a normal client-side update, not compared against server markup.
+  const [liveSystemScheme, setLiveSystemScheme] = useState<ColorScheme>('light');
   const [themeMode, setThemeModeState] = useState<ThemeMode>('system');
   const [muted, setMutedState] = useState(false);
   const [announceMode, setAnnounceModeState] = useState<AnnounceMode>('celebration');
@@ -92,6 +112,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   const [customCelebrationSoundUri, setCustomCelebrationSoundUriState] = useState<string | null>(null);
   const [customCelebrationSoundName, setCustomCelebrationSoundNameState] = useState<string | null>(null);
   const [exerciseInputMode, setExerciseInputModeState] = useState<ExerciseInputMode>('tap');
+  const [showPictures, setShowPicturesState] = useState(true);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -105,6 +126,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
           storedCustomUri,
           storedCustomName,
           storedExerciseInputMode,
+          storedShowPictures,
         ] = await Promise.all([
           AsyncStorage.getItem(THEME_MODE_KEY),
           AsyncStorage.getItem(MUTED_KEY),
@@ -113,6 +135,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
           AsyncStorage.getItem(CUSTOM_CELEBRATION_URI_KEY),
           AsyncStorage.getItem(CUSTOM_CELEBRATION_NAME_KEY),
           AsyncStorage.getItem(EXERCISE_INPUT_MODE_KEY),
+          AsyncStorage.getItem(SHOW_PICTURES_KEY),
         ]);
         if (storedTheme === 'light' || storedTheme === 'dark' || storedTheme === 'system') {
           setThemeModeState(storedTheme);
@@ -134,6 +157,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         }
         if (storedExerciseInputMode === 'tap' || storedExerciseInputMode === 'type') {
           setExerciseInputModeState(storedExerciseInputMode);
+        }
+        if (storedShowPictures != null) {
+          setShowPicturesState(storedShowPictures === 'true');
         }
       } finally {
         setReady(true);
@@ -210,6 +236,11 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(EXERCISE_INPUT_MODE_KEY, mode).catch(() => {});
   };
 
+  const setShowPictures = (show: boolean) => {
+    setShowPicturesState(show);
+    AsyncStorage.setItem(SHOW_PICTURES_KEY, String(show)).catch(() => {});
+  };
+
   const scheme: ColorScheme = themeMode === 'system' ? liveSystemScheme : themeMode;
   const colors = colorsFor(scheme);
 
@@ -219,12 +250,13 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       customCelebrationEnabled, setCustomCelebrationEnabled,
       customCelebrationSoundUri, customCelebrationSoundName, setCustomCelebrationSound,
       exerciseInputMode, setExerciseInputMode,
+      showPictures, setShowPictures,
       ready,
     }),
     [
       themeMode, scheme, colors, muted, announceMode,
       customCelebrationEnabled, customCelebrationSoundUri, customCelebrationSoundName,
-      exerciseInputMode,
+      exerciseInputMode, showPictures,
       ready,
     ]
   );
