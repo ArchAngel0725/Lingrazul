@@ -4,7 +4,7 @@
 // Wrong answers disappear on tap, correct answer advances to next card
 
 import { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
 import * as Speech from 'expo-speech';
 import { Audio } from 'expo-av';
 import { FlashCard, LetterCard } from '../lib/cards';
@@ -193,6 +193,20 @@ export default function FlashCardComponent({ card, choices, onCorrect, muted, an
           setHeardHint(true);
           Speech.speak(getSpokenQuestion(card), { language: langConfig.ttsLocale });
         }}>
+          {/* imageUrl (a real photo) wins if set; emoji is the free
+              fallback for rows with no photo uploaded yet. Most rows
+              (letters, abstract/grammar words) have neither and render
+              no picture at all, same layout as before this feature
+              existed. */}
+          {card.imageUrl ? (
+            <Image
+              source={{ uri: card.imageUrl }}
+              style={isNarrow ? styles.cardImageNarrow : styles.cardImage}
+              resizeMode="contain"
+            />
+          ) : card.emoji ? (
+            <Text style={isNarrow ? styles.cardEmojiNarrow : styles.cardEmoji}>{card.emoji}</Text>
+          ) : null}
           <Text style={[isNarrow ? styles.mainTextNarrow : styles.mainText, { color: colors.text }]}>{getQuestion(card)}</Text>
         </TouchableOpacity>
         {/* Category label (e.g. "verb", "particle") is only meaningful for
@@ -250,6 +264,28 @@ const styles = StyleSheet.create({
     padding: 20,
     borderWidth: 1,
     marginBottom: 20,
+  },
+  cardImage: {
+    width: 160,
+    height: 160,
+    marginBottom: 12,
+    borderRadius: 8,
+  },
+  cardImageNarrow: {
+    width: 100,
+    height: 100,
+    marginBottom: 8,
+    borderRadius: 8,
+  },
+  cardEmoji: {
+    fontSize: 96,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  cardEmojiNarrow: {
+    fontSize: 56,
+    marginBottom: 8,
+    textAlign: 'center',
   },
   mainText: {
     fontSize: 72,

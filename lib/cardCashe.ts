@@ -87,7 +87,7 @@ export async function fetchFlashCards(
   const pools = await Promise.all(activeCategories.map(async (catKey) => {
     let query = supabase
       .from('words')
-      .select('id, text, difficulty, tags, categories!inner(key), word_translations(translation, is_primary, target_language_id)')
+      .select('id, text, difficulty, tags, image_url, emoji, categories!inner(key), word_translations(translation, is_primary, target_language_id)')
       .eq('language_id', langId)
       .eq('categories.key', catKey);
 
@@ -120,6 +120,8 @@ export async function fetchFlashCards(
       learningLanguage: row.text,
       reading: '',
       nativeLanguage: primary?.translation ?? '',
+      imageUrl: row.image_url ?? null,
+      emoji: row.emoji ?? null,
     };
   });
 
@@ -141,6 +143,8 @@ interface CombinedLetterRow {
   difficulty: number;
   category: string;
   tags: string[];
+  imageUrl: string | null;
+  emoji: string | null;
 }
 
 // Re-pairs v2's separate hiragana/katakana rows (see letter_types) back
@@ -162,7 +166,7 @@ async function fetchKanaRowsForCategory(
 ): Promise<CombinedLetterRow[]> {
   let query = supabase
     .from('letters')
-    .select('id, character, difficulty, tags, letter_types(key), categories!inner(key), letter_translations(transliteration, is_primary, target_language_id)')
+    .select('id, character, difficulty, tags, image_url, emoji, letter_types(key), categories!inner(key), letter_translations(transliteration, is_primary, target_language_id)')
     .eq('language_id', langId)
     .eq('categories.key', catKey);
 
@@ -204,6 +208,8 @@ async function fetchKanaRowsForCategory(
       difficulty: base.difficulty,
       category: catKey,
       tags: base.tags ?? [],
+      imageUrl: pair.hiragana?.image_url ?? pair.katakana?.image_url ?? null,
+      emoji: pair.hiragana?.emoji ?? pair.katakana?.emoji ?? null,
     });
   }
   return combined;
@@ -222,7 +228,7 @@ async function fetchKanjiRows(
 ): Promise<CombinedLetterRow[]> {
   let query = supabase
     .from('kanji')
-    .select('id, character, difficulty, tags, kanji_readings(reading, romaji, is_primary), kanji_translations(translation, is_primary, target_language_id)')
+    .select('id, character, difficulty, tags, image_url, emoji, kanji_readings(reading, romaji, is_primary), kanji_translations(translation, is_primary, target_language_id)')
     .eq('language_id', langId);
 
   if (typeof maxDifficulty === 'number') query = query.lte('difficulty', maxDifficulty);
@@ -255,6 +261,8 @@ async function fetchKanjiRows(
       // "kanji -> meaning" mode exists in LETTER_MODES) - kept off the
       // tags array so it doesn't get treated as a filterable tag.
       tags: row.tags ?? [],
+      imageUrl: row.image_url ?? null,
+      emoji: row.emoji ?? null,
     };
   });
 }
@@ -327,6 +335,8 @@ export async function fetchLetterCards(
         hasKanji: row.hasKanji,
         questionScript: mode.question,
         answerScript: mode.answer,
+        imageUrl: row.imageUrl,
+        emoji: row.emoji,
       };
     })
     .filter((c): c is LetterCard => c !== null);
